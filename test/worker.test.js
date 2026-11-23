@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
@@ -20,25 +20,71 @@ const WEBHOOK_SECRET = 'test-webhook-secret';
 const INVITE_CODE = 'FRIEND2026';
 const persistDir = mkdtempSync(path.join(tmpdir(), 'p2pft-test-'));
 
-// 실제 HTTP 인증 메일 발송을 캡처하는 로컬 테스트 Webhook 서버
+// 실제 HTTP 인증 메일 발송을 캡처하는 로컬 테스트 Webhook 서버 + OpenAI 호환 모의 AI 서버
 const sentEmails = [];
-const mailServer = http.createServer((req, res) => {
+const mockServer = http.createServer((req, res) => {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (req.headers['x-webhook-secret'] !== WEBHOOK_SECRET && body.secret !== WEBHOOK_SECRET) {
-      res.writeHead(403);
-      return res.end('forbidden');
+    if (req.url === '/send') {
+      if (req.headers['x-webhook-secret'] !== WEBHOOK_SECRET && body.secret !== WEBHOOK_SECRET) {
+        res.writeHead(403);
+        return res.end('forbidden');
+      }
+      sentEmails.push(body);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true }));
     }
-    sentEmails.push(body);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    if (req.url === '/chat/completions') {
+      if (req.headers.authorization !== 'Bearer mock-ai-key') {
+        res.writeHead(401);
+        return res.end('unauthorized');
+      }
+      const msgs = body.messages || [];
+      const last = msgs[msgs.length - 1];
+      // 1라운드: 유저 요청이면 create_guest_pass 도구 호출 요청
+      if (last.role === 'user') {
+        const toolName = last.content.includes('파기') ? 'revoke_all_guest_passes' : 'create_guest_pass';
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: null,
+                  tool_calls: [{ id: 'tc_1', type: 'function', function: { name: toolName, arguments: '{}' } }],
+                },
+              },
+            ],
+          })
+        );
+      }
+      // 2라운드: 도구 실행 결과를 받아 한국어 답변 작성
+      const toolOut = JSON.parse(last.content);
+      const reply = toolOut.code
+        ? `10분 임시 특별 코드 ${toolOut.code}를 발급했습니다.`
+        : `임시 코드 ${toolOut.revokedCount ?? 0}개를 모두 파기했습니다.`;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply } }] }));
+    }
+    res.writeHead(404);
+    res.end();
   });
 });
 
-await new Promise((resolve) => mailServer.listen(0, '127.0.0.1', resolve));
-const mailPort = mailServer.address().port;
+await new Promise((resolve) => mockServer.listen(0, '127.0.0.1', resolve));
+const mockPort = mockServer.address().port;
+
+// CI 등 Cloudflare 미로그인 환경에서도 100% 로컬 실행되도록 원격 AI 바인딩만 제외한 테스트용 설정 생성
+const baseConfig = JSON.parse(readFileSync(path.resolve('wrangler.jsonc'), 'utf8'));
+delete baseConfig.ai;
+delete baseConfig.$schema;
+baseConfig.main = path.resolve('src/worker.js');
+baseConfig.assets = { ...baseConfig.assets, directory: path.resolve('public') };
+const testConfigPath = path.join(persistDir, 'wrangler.test.json');
+writeFileSync(testConfigPath, JSON.stringify(baseConfig, null, 2));
 
 const wranglerBin = path.resolve('node_modules/wrangler/bin/wrangler.js');
 const child = spawn(
@@ -46,6 +92,7 @@ const child = spawn(
   [
     wranglerBin,
     'dev',
+    '--config', testConfigPath,
     '--ip', '127.0.0.1',
     '--port', String(PORT),
     '--inspector-port', '0',
@@ -53,9 +100,12 @@ const child = spawn(
     '--var', 'APP_PASSWORD:test-password-123',
     '--var', `INVITE_CODE:${INVITE_CODE}`,
     '--var', 'ADMIN_EMAILS:admin@example.com',
-    '--var', `EMAIL_WEBHOOK_URL:http://127.0.0.1:${mailPort}/send`,
+    '--var', `EMAIL_WEBHOOK_URL:http://127.0.0.1:${mockPort}/send`,
     '--var', `EMAIL_WEBHOOK_SECRET:${WEBHOOK_SECRET}`,
     '--var', `ADMIN_API_KEY:${ADMIN_API_KEY}`,
+    '--var', `AI_API_BASE:http://127.0.0.1:${mockPort}`,
+    '--var', 'AI_API_KEY:mock-ai-key',
+    '--var', 'AI_MODEL:mock-gpt',
     '--var', 'ALLOW_SHORT_PASS_TTL:1',
     '--show-interactive-dev-session=false',
     '--log-level', 'error',
@@ -292,9 +342,9 @@ try {
     const initRes = await (await mcpCall('initialize', {}, 1)).json();
     assert.equal(initRes.result.serverInfo.name, 'p2p-file-transfer-admin');
 
-    // tools/list (9개 도구)
+    // tools/list (10개 도구)
     const listRes = await (await mcpCall('tools/list', {}, 2)).json();
-    assert.equal(listRes.result.tools.length, 9);
+    assert.equal(listRes.result.tools.length, 10);
 
     // AI가 임시 코드 발급 → 게스트 입장 → 목록 확인 → 파기
     const genRes = await (await mcpCall('tools/call', { name: 'create_guest_pass', arguments: { singleUse: false } }, 3)).json();
@@ -323,6 +373,41 @@ try {
     });
     assert.equal(statusRes.status, 200);
     assert.equal((await statusRes.json()).stats.totalUsers, 0);
+  });
+
+  await test('웹 내장 AI 관리 비서 (/api/admin/ai/chat): 일반 회원 차단 → AI 도구 실행(임시 코드 발급→게스트 입장→전체 파기)', async () => {
+    // 일반 회원은 AI 관리 접근 불가 (403)
+    assert.equal((await postJson('/api/admin/ai/chat', { message: '코드 발급' }, { cookie: userCookie })).status, 403);
+
+    const info = await (await fetch(`${BASE}/api/admin/ai/info`, { headers: { cookie: adminCookie } })).json();
+    assert.equal(info.enabled, true);
+    assert.equal(info.provider, 'external');
+
+    // 관리자가 자연어로 임시 코드 발급 요청 → AI가 create_guest_pass 도구 실행
+    const chatRes = await postJson(
+      '/api/admin/ai/chat',
+      { message: '10분 임시 코드 하나 발급해 줘' },
+      { cookie: adminCookie }
+    );
+    assert.equal(chatRes.status, 200);
+    const chat = await chatRes.json();
+    assert.equal(chat.executed[0].tool, 'create_guest_pass');
+    assert.equal(chat.executed[0].ok, true);
+    const aiCode = chat.executed[0].result.code;
+    assert.match(aiCode, /^[A-Z0-9]{4}-[A-Z0-9]{4}$/);
+    assert.match(chat.reply, new RegExp(aiCode));
+
+    // AI가 발급한 코드로 게스트 즉시 입장 가능
+    assert.equal((await postJson('/api/auth/pass', { code: aiCode })).status, 204);
+
+    // AI에게 전체 파기 지시 → 코드 즉시 무효화
+    const revRes = await postJson(
+      '/api/admin/ai/chat',
+      { message: '임시 코드 전부 파기해 줘' },
+      { cookie: adminCookie }
+    );
+    assert.equal(revRes.status, 200);
+    assert.equal((await postJson('/api/auth/pass', { code: aiCode })).status, 401);
   });
 
   await test('시그널링: 방 생성 → Origin 거부 → ping/pong → SDP 중계 → 정원 초과 → 퇴장', async () => {
@@ -364,7 +449,7 @@ try {
   console.log(`\n✓ ${passed}개 전체 통합 테스트 통과`);
 } finally {
   child.kill();
-  mailServer.close();
+  mockServer.close();
   await new Promise((r) => setTimeout(r, 300));
   rmSync(persistDir, { recursive: true, force: true });
 }

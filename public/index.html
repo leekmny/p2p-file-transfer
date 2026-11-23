@@ -17,10 +17,38 @@
       </div>
       <div class="user-bar">
         <span id="userBadge" class="badge" hidden></span>
+        <button id="aiToggle" class="ghost small" hidden>🤖 AI 관리</button>
         <button id="adminPassToggle" class="ghost small" hidden>🔑 임시 코드</button>
         <button id="logoutBtn" class="ghost small">로그아웃</button>
       </div>
     </header>
+
+    <!-- 관리자 전용: 내장 AI 관리 비서 패널 -->
+    <section id="aiPanel" class="card ai-panel" hidden>
+      <div class="room-head">
+        <div>
+          <strong>🤖 AI 관리 비서</strong>
+          <span id="aiEngineBadge" class="badge">확인 중…</span>
+          <p class="hint">자연어로 말하면 AI가 임시 코드 발급·파기, 회원 조회·인증·삭제, 잠금 해제, 방 생성을 직접 처리합니다.</p>
+        </div>
+        <button id="closeAiBtn" class="ghost small">닫기</button>
+      </div>
+
+      <div id="aiChips" class="ai-chips">
+        <button type="button" class="chip" data-prompt="친구한테 보낼 10분 임시 코드 하나 발급해 줘">10분 임시 코드 발급</button>
+        <button type="button" class="chip" data-prompt="현재 서비스 상태랑 가입 회원, 활성 임시 코드 점검해 줘">상태·회원 점검</button>
+        <button type="button" class="chip" data-prompt="바로 파일 주고받을 수 있는 방 하나 만들어 줘">방 바로 만들기</button>
+        <button type="button" class="chip" data-prompt="잠긴 로그인 제한 전부 풀어 줘">잠금 해제</button>
+      </div>
+
+      <div id="aiLog" class="ai-log" data-empty="아래에 관리 요청을 입력하거나 위 빠른 버튼을 눌러 보세요."></div>
+
+      <form id="aiForm" class="join">
+        <input id="aiInput" type="text" maxlength="1500" placeholder="예: 1회용 10분 임시 코드 발급해 줘" autocomplete="off" required />
+        <button type="submit" class="primary">전송</button>
+      </form>
+      <p id="aiError" class="error" hidden></p>
+    </section>
 
     <!-- 관리자 전용: 10분 임시 특별 코드 발급 패널 -->
     <section id="adminPanel" class="card admin-panel" hidden>

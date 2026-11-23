@@ -379,6 +379,12 @@ export class AccountStore extends DurableObject {
     return true;
   }
 
+  async revokeAllGuestPasses() {
+    const count = this.ctx.storage.sql.exec('SELECT COUNT(*) AS c FROM guest_passes').toArray()[0]?.c || 0;
+    this.ctx.storage.sql.exec('DELETE FROM guest_passes');
+    return count;
+  }
+
   async redeemGuestPass(rawCode) {
     const now = Date.now();
     this.purgeExpiredPasses(now);

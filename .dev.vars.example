@@ -33,11 +33,16 @@ APP_PASSWORD=
 # EMAIL_WEBHOOK_SECRET=웹훅-공유-비밀키
 
 # ================================================================
-# 3) AI 연동 관리 (원격 MCP 서버 /mcp + Admin REST API)
-#    16자 이상 랜덤 키를 등록하면 Claude/Cursor/Antigravity 등 AI가
-#    임시 코드 발급·회원 관리·잠금 해제·방 생성을 직접 관리할 수 있습니다.
+# 3) AI 연동 관리 (웹 내장 AI 비서 + 원격 MCP 서버 /mcp)
+#    - 웹 내장 AI 비서: 기본은 Cloudflare Workers AI (무료, 키 불필요)
+#    - 외부 LLM(OpenAI / Gemini 등)을 쓰고 싶을 때만 아래 AI_API_* 설정
+#    - 원격 MCP(/mcp): ADMIN_API_KEY (16자 이상) 등록 시 활성화
 # ================================================================
 # ADMIN_API_KEY=32자-이상의-랜덤-관리자-API키
+# AI_API_KEY=sk-xxxx 또는 Gemini API 키
+# AI_API_BASE=https://api.openai.com/v1   # Gemini: https://generativelanguage.googleapis.com/v1beta/openai
+# AI_MODEL=gpt-4o-mini                    # Gemini: gemini-2.5-flash
+# WORKERS_AI_MODEL=@cf/meta/llama-3.3-70b-instruct-fp8-fast
 
 # ================================================================
 # 4) (선택) Cloudflare Access 이메일 인증

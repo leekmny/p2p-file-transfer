@@ -27,6 +27,8 @@ let signalChain = Promise.resolve();
 let issuedPassExpiresAt = 0;
 let passCountdownTimer = null;
 let activePasses = [];
+const aiHistory = [];
+let aiBusy = false;
 
 const sendQueue = [];
 let sending = false;
@@ -72,6 +74,7 @@ async function checkSession() {
         badge.hidden = false;
       }
       $('#adminPassToggle').hidden = !isAdmin;
+      $('#aiToggle').hidden = !isAdmin;
     }
   } catch { /* 네트워크 일시 중단 */ }
   return true;
@@ -118,6 +121,26 @@ function bindUI() {
   $('#copyPassLinkBtn').addEventListener('click', () =>
     copyText($('#issuedLink').value, $('#copyPassLinkBtn'), '링크 복사')
   );
+
+  // 관리자 AI 비서 UI
+  $('#aiToggle').addEventListener('click', () => {
+    const panel = $('#aiPanel');
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) {
+      loadAiInfo();
+      $('#aiInput').focus();
+    }
+  });
+  $('#closeAiBtn').addEventListener('click', () => { $('#aiPanel').hidden = true; });
+  $('#aiChips').addEventListener('click', (e) => {
+    const prompt = e.target.closest('button[data-prompt]')?.dataset.prompt;
+    if (prompt) sendAiMessage(prompt);
+  });
+  $('#aiForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const text = $('#aiInput').value.trim();
+    if (text) sendAiMessage(text);
+  });
 
   const drop = $('#dropZone');
   const input = $('#fileInput');
@@ -242,6 +265,103 @@ function startPassTicker() {
   };
   tick();
   passCountdownTimer = setInterval(tick, 1000);
+}
+
+// ================================================================ 관리자 AI 비서
+async function loadAiInfo() {
+  if (!isAdmin) return;
+  try {
+    const res = await fetch('/api/admin/ai/info', { cache: 'no-store' });
+    if (!res.ok) return;
+    const info = await res.json();
+    const badge = $('#aiEngineBadge');
+    badge.textContent = info.enabled ? info.label : 'AI 미연결';
+    badge.className = `badge ${info.enabled ? 'ok' : 'err'}`;
+  } catch { /* 무시 */ }
+}
+
+async function sendAiMessage(text) {
+  if (aiBusy) return;
+  aiBusy = true;
+  const errEl = $('#aiError');
+  const input = $('#aiInput');
+  const submitBtn = $('#aiForm button[type="submit"]');
+  errEl.hidden = true;
+  input.value = '';
+  input.disabled = submitBtn.disabled = true;
+
+  appendAiMessage('user', text);
+  const pending = appendAiMessage('assistant', '생각 및 작업 실행 중…');
+
+  try {
+    const res = await fetch('/api/admin/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: text, history: aiHistory }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      pending.remove();
+      errEl.textContent = data.error || `AI 호출 실패 (${res.status})`;
+      errEl.hidden = false;
+      return;
+    }
+
+    pending.remove();
+    appendAiMessage('assistant', data.reply, data.executed || []);
+    aiHistory.push({ role: 'user', content: text }, { role: 'assistant', content: data.reply });
+    if (aiHistory.length > 10) aiHistory.splice(0, aiHistory.length - 10);
+
+    // 임시 코드 변경이 있었으면 목록 동기화
+    if ((data.executed || []).some((e) => e.tool.includes('guest_pass'))) {
+      refreshPasses();
+    }
+  } catch {
+    pending.remove();
+    errEl.textContent = '서버에 연결할 수 없습니다.';
+    errEl.hidden = false;
+  } finally {
+    aiBusy = false;
+    input.disabled = submitBtn.disabled = false;
+    input.focus();
+  }
+}
+
+function appendAiMessage(role, text, executed = []) {
+  const log = $('#aiLog');
+  const box = document.createElement('div');
+  box.className = `ai-msg ${role}`;
+
+  if (executed.length) {
+    const toolsWrap = document.createElement('div');
+    toolsWrap.className = 'ai-tools';
+    for (const ex of executed) {
+      const chip = document.createElement('div');
+      chip.className = `ai-tool ${ex.ok ? 'ok' : 'err'}`;
+      const label = document.createElement('span');
+      label.textContent = `${ex.ok ? '✓' : '✕'} ${ex.tool}`;
+      chip.append(label);
+
+      // 발급된 임시 코드나 방 링크가 있으면 원클릭 복사 버튼 제공
+      const copyUrl = ex.result?.loginUrl || ex.result?.shareUrl;
+      if (ex.ok && copyUrl) {
+        const copyBtn = makeButton(ex.result.code ? `${ex.result.code} 링크 복사` : `${ex.result.room} 링크 복사`, 'small ghost');
+        copyBtn.addEventListener('click', () => copyText(copyUrl, copyBtn, copyBtn.textContent));
+        chip.append(copyBtn);
+      }
+      toolsWrap.append(chip);
+    }
+    box.append(toolsWrap);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'ai-text';
+  body.textContent = text;
+  box.append(body);
+
+  log.append(box);
+  log.scrollTop = log.scrollHeight;
+  return box;
 }
 
 // ================================================================ 방 생성 / 참여 / 시그널링

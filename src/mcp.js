@@ -1,11 +1,9 @@
-// AI 관리용 원격 MCP 서버 (Streamable HTTP · JSON-RPC 2.0, 외부 의존성 없음)
-// - 엔드포인트: POST /mcp  (Authorization: Bearer <ADMIN_API_KEY>)
-// - Claude / Cursor / Antigravity / T3 Code 등 MCP 클라이언트에서 자연어로 서비스 관리 가능
-//   (10분 임시 특별 코드 발급·조회·파기, 회원 목록/수동 인증/삭제, 잠금 해제, 방 생성, 상태 확인)
+// AI 관리용 공용 도구 정의 + 원격 MCP 서버 (Streamable HTTP · JSON-RPC 2.0, 외부 의존성 없음)
+// - 원격 MCP 엔드포인트(POST /mcp)와 웹 내장 AI 관리 비서(POST /api/admin/ai/chat)가 동일한 10개 도구를 공유
 
 const PROTOCOL_VERSION = '2025-03-26';
 
-const TOOLS = [
+export const ADMIN_TOOLS = [
   {
     name: 'get_status',
     description: '현재 P2P 파일 전송 서비스의 인증 설정과 회원/임시 코드/잠금 통계를 조회합니다.',
@@ -41,6 +39,11 @@ const TOOLS = [
       required: ['id'],
       additionalProperties: false,
     },
+  },
+  {
+    name: 'revoke_all_guest_passes',
+    description: '현재 활성화된 모든 임시 특별 코드를 한 번에 즉시 파기합니다.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
     name: 'list_users',
@@ -83,6 +86,72 @@ const TOOLS = [
   },
 ];
 
+export async function executeAdminTool(name, args, actions) {
+  const safeArgs = args && typeof args === 'object' ? args : {};
+  switch (name) {
+    case 'get_status':
+      return { ok: true, data: await actions.getStatus() };
+
+    case 'create_guest_pass': {
+      const pass = await actions.createGuestPass(!!safeArgs.singleUse);
+      return {
+        ok: true,
+        data: {
+          ...pass,
+          loginUrl: `${actions.origin}/login.html?pass=${encodeURIComponent(pass.code)}`,
+          note: '10분 후 자동으로 파기됩니다.',
+        },
+      };
+    }
+
+    case 'list_guest_passes':
+      return { ok: true, data: { passes: await actions.listGuestPasses() } };
+
+    case 'revoke_guest_pass': {
+      const id = String(safeArgs.id || '').trim();
+      if (!/^[a-f0-9]{16}$/.test(id)) return { ok: false, error: '유효한 16자리 hex 코드 ID가 필요합니다.' };
+      await actions.revokeGuestPass(id);
+      return { ok: true, data: { revoked: true, id } };
+    }
+
+    case 'revoke_all_guest_passes': {
+      const count = await actions.revokeAllGuestPasses();
+      return { ok: true, data: { revokedCount: count } };
+    }
+
+    case 'list_users':
+      return { ok: true, data: { users: await actions.listUsers() } };
+
+    case 'verify_user': {
+      const email = String(safeArgs.email || '').trim().toLowerCase();
+      if (!email) return { ok: false, error: '이메일 주소가 필요합니다.' };
+      const ok = await actions.verifyUser(email);
+      if (!ok) return { ok: false, error: `회원을 찾을 수 없습니다: ${email}` };
+      return { ok: true, data: { verified: true, email } };
+    }
+
+    case 'delete_user': {
+      const email = String(safeArgs.email || '').trim().toLowerCase();
+      if (!email) return { ok: false, error: '이메일 주소가 필요합니다.' };
+      const ok = await actions.deleteUser(email);
+      if (!ok) return { ok: false, error: `회원을 찾을 수 없습니다: ${email}` };
+      return { ok: true, data: { deleted: true, email } };
+    }
+
+    case 'clear_rate_limits':
+      await actions.clearRateLimits();
+      return { ok: true, data: { cleared: true } };
+
+    case 'create_room': {
+      const room = await actions.createRoom();
+      return { ok: true, data: { room, shareUrl: `${actions.origin}/?room=${room}` } };
+    }
+
+    default:
+      return { ok: false, error: `알 수 없는 도구입니다: ${name}` };
+  }
+}
+
 function rpcResult(id, result) {
   return { jsonrpc: '2.0', id, result };
 }
@@ -91,31 +160,13 @@ function rpcError(id, code, message) {
   return { jsonrpc: '2.0', id, error: { code, message } };
 }
 
-function toolOk(data) {
-  return {
-    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
-    structuredContent: data,
-  };
-}
-
-function toolErr(message) {
-  return {
-    isError: true,
-    content: [{ type: 'text', text: message }],
-  };
-}
-
 export async function handleMcpRequest(body, actions) {
   if (!body || typeof body !== 'object' || body.jsonrpc !== '2.0' || typeof body.method !== 'string') {
     return { status: 400, payload: rpcError(null, -32600, 'Invalid JSON-RPC 2.0 request') };
   }
 
   const { id, method, params } = body;
-
-  // Notification (id 없음): 202 Accepted
-  if (id === undefined) {
-    return { status: 202, payload: null };
-  }
+  if (id === undefined) return { status: 202, payload: null };
 
   switch (method) {
     case 'initialize':
@@ -124,7 +175,7 @@ export async function handleMcpRequest(body, actions) {
         payload: rpcResult(id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: 'p2p-file-transfer-admin', version: '2.0.0' },
+          serverInfo: { name: 'p2p-file-transfer-admin', version: '2.1.0' },
         }),
       };
 
@@ -132,77 +183,38 @@ export async function handleMcpRequest(body, actions) {
       return { status: 200, payload: rpcResult(id, {}) };
 
     case 'tools/list':
-      return { status: 200, payload: rpcResult(id, { tools: TOOLS }) };
+      return { status: 200, payload: rpcResult(id, { tools: ADMIN_TOOLS }) };
 
     case 'tools/call': {
       const name = params?.name;
       const args = params?.arguments && typeof params.arguments === 'object' ? params.arguments : {};
       try {
-        const res = await dispatchTool(name, args, actions);
-        return { status: 200, payload: rpcResult(id, res) };
+        const res = await executeAdminTool(name, args, actions);
+        if (!res.ok) {
+          return {
+            status: 200,
+            payload: rpcResult(id, { isError: true, content: [{ type: 'text', text: res.error }] }),
+          };
+        }
+        return {
+          status: 200,
+          payload: rpcResult(id, {
+            content: [{ type: 'text', text: JSON.stringify(res.data, null, 2) }],
+            structuredContent: res.data,
+          }),
+        };
       } catch (err) {
-        return { status: 200, payload: rpcResult(id, toolErr(err?.message || '도구 실행 중 오류 발생')) };
+        return {
+          status: 200,
+          payload: rpcResult(id, {
+            isError: true,
+            content: [{ type: 'text', text: err?.message || '도구 실행 중 오류 발생' }],
+          }),
+        };
       }
     }
 
     default:
       return { status: 200, payload: rpcError(id, -32601, `Method not found: ${method}`) };
-  }
-}
-
-async function dispatchTool(name, args, actions) {
-  switch (name) {
-    case 'get_status':
-      return toolOk(await actions.getStatus());
-
-    case 'create_guest_pass': {
-      const pass = await actions.createGuestPass(!!args.singleUse);
-      return toolOk({
-        ...pass,
-        loginUrl: `${actions.origin}/login.html?pass=${encodeURIComponent(pass.code)}`,
-        note: '10분 후 자동으로 파기됩니다.',
-      });
-    }
-
-    case 'list_guest_passes':
-      return toolOk({ passes: await actions.listGuestPasses() });
-
-    case 'revoke_guest_pass': {
-      const id = String(args.id || '').trim();
-      if (!/^[a-f0-9]{16}$/.test(id)) return toolErr('유효한 16자리 hex 코드 ID가 필요합니다.');
-      await actions.revokeGuestPass(id);
-      return toolOk({ revoked: true, id });
-    }
-
-    case 'list_users':
-      return toolOk({ users: await actions.listUsers() });
-
-    case 'verify_user': {
-      const email = String(args.email || '').trim().toLowerCase();
-      if (!email) return toolErr('이메일 주소가 필요합니다.');
-      const ok = await actions.verifyUser(email);
-      if (!ok) return toolErr(`회원을 찾을 수 없습니다: ${email}`);
-      return toolOk({ verified: true, email });
-    }
-
-    case 'delete_user': {
-      const email = String(args.email || '').trim().toLowerCase();
-      if (!email) return toolErr('이메일 주소가 필요합니다.');
-      const ok = await actions.deleteUser(email);
-      if (!ok) return toolErr(`회원을 찾을 수 없습니다: ${email}`);
-      return toolOk({ deleted: true, email });
-    }
-
-    case 'clear_rate_limits':
-      await actions.clearRateLimits();
-      return toolOk({ cleared: true });
-
-    case 'create_room': {
-      const room = await actions.createRoom();
-      return toolOk({ room, shareUrl: `${actions.origin}/?room=${room}` });
-    }
-
-    default:
-      return toolErr(`알 수 없는 도구입니다: ${name}`);
   }
 }

@@ -104,8 +104,20 @@ npx wrangler secret put APP_PASSWORD
 
 ---
 
-## 3. AI 관리 연동 (원격 MCP 서버)
+## 3. AI 관리 연동 (웹 내장 AI 비서 + 원격 MCP 서버)
 
+### A. 웹 관리자 화면 내장 AI 비서 (`🤖 AI 관리`, 기본 무료 활성화)
+- 관리자로 로그인하면 상단에 **`🤖 AI 관리`** 버튼이 나타납니다.
+- **기본으로 Cloudflare Workers AI(`@cf/meta/llama-3.3-70b-instruct-fp8-fast`, 무료 플랜 일 10,000 뉴런)**에 연결되어 있어, **별도 API 키 없이 바로** 브라우저에서 자연어로 관리할 수 있습니다.
+- OpenAI나 Gemini API를 연동하고 싶다면 Secret만 추가하면 자동으로 전환됩니다:
+  ```bash
+  npx wrangler secret put AI_API_KEY
+  # (선택) 기본은 OpenAI gpt-4o-mini. Gemini 사용 시:
+  npx wrangler secret put AI_API_BASE   # https://generativelanguage.googleapis.com/v1beta/openai
+  npx wrangler secret put AI_MODEL      # gemini-2.5-flash
+  ```
+
+### B. 외부 AI 에이전트용 원격 MCP 서버 (`POST /mcp`)
 `ADMIN_API_KEY`(16자 이상, 권장 32자 랜덤 문자열)를 등록하면 **`POST /mcp`** 원격 MCP 서버와 **`/api/admin/*`** REST API가 활성화됩니다.
 
 ```bash
@@ -127,13 +139,14 @@ MCP 클라이언트(Claude Desktop / Cursor / Antigravity / T3 Code 등) 설정 
 }
 ```
 
-### AI가 사용할 수 있는 관리 도구 (9종)
-| MCP 도구 | 설명 |
+### AI가 사용할 수 있는 관리 도구 (10종)
+| 도구 | 설명 |
 |---|---|
 | `get_status` | 인증 설정 상태 및 회원·임시 코드·잠금 통계 조회 |
 | `create_guest_pass` | 인증 없이 입장하는 10분 임시 특별 코드 발급 (`singleUse` 선택 가능) |
 | `list_guest_passes` | 현재 활성 임시 코드 목록과 남은 시간 조회 |
 | `revoke_guest_pass` | 특정 임시 코드 즉시 파기 |
+| `revoke_all_guest_passes` | 활성 임시 코드 전체 즉시 파기 |
 | `list_users` | 가입 회원 목록 및 인증 여부 조회 (비밀번호 해시 비노출) |
 | `verify_user` | 미인증 회원 수동 즉시 인증 |
 | `delete_user` | 회원 삭제 |

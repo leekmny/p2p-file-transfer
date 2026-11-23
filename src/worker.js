@@ -16,6 +16,7 @@ import {
 } from './auth.js';
 import { sendVerificationEmail } from './email.js';
 import { handleMcpRequest } from './mcp.js';
+import { aiProviderInfo, runAdminAiChat } from './ai-agent.js';
 
 export { SignalingRoom } from './room.js';
 export { AccountStore } from './account-store.js';
@@ -171,6 +172,7 @@ function buildAdminActions(request, env, actor) {
     createGuestPass: (singleUse, ttlMs) => store.createGuestPass(actor, singleUse, ttlMs),
     listGuestPasses: () => store.listGuestPasses(),
     revokeGuestPass: (id) => store.revokeGuestPass(id),
+    revokeAllGuestPasses: () => store.revokeAllGuestPasses(),
     listUsers: () => store.listUsers(),
     verifyUser: (email) => store.verifyUserByAdmin(email),
     deleteUser: (email) => store.deleteUser(email),
@@ -480,6 +482,38 @@ async function handleAdminApi(request, env, p) {
   if (p === '/api/admin/rooms' && request.method === 'POST') {
     const room = await actions.createRoom();
     return json(request, 201, { room, shareUrl: `${actions.origin}/?room=${room}` });
+  }
+
+  if (p === '/api/admin/ai/info' && request.method === 'GET') {
+    return json(request, 200, aiProviderInfo(env));
+  }
+
+  if (p === '/api/admin/ai/chat' && request.method === 'POST') {
+    const store = accountsStub(env);
+    const rlKey = `aichat:${await sha256Hex(clientIp(request))}`;
+    if (!(await store.checkRateLimit(rlKey, 30))) {
+      return json(request, 429, { error: 'AI 요청이 너무 많습니다. 잠시 후 다시 시도하세요.' });
+    }
+    const parsed = await readJsonBody(request, 16_384);
+    if (parsed.error) return json(request, 400, { error: '잘못된 요청입니다.' });
+
+    const message = typeof parsed.data.message === 'string' ? parsed.data.message.trim() : '';
+    if (!message || message.length > 1500) {
+      return json(request, 400, { error: '메시지는 1자 이상 1500자 이하로 입력하세요.' });
+    }
+
+    await store.recordRateLimit(rlKey);
+    try {
+      const result = await runAdminAiChat(
+        env,
+        { message, history: parsed.data.history },
+        buildAdminActions(request, env, `ai-web:${actor}`)
+      );
+      return json(request, 200, result);
+    } catch (err) {
+      console.error('AI 관리 비서 오류:', err);
+      return json(request, 502, { error: err?.message || 'AI 응답 생성에 실패했습니다.' });
+    }
   }
 
   return json(request, 404, { error: 'not_found' });
