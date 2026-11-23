@@ -59,13 +59,13 @@ function switchView(name) {
   const isSubView = isAdminView || name === 'oauthInvite' || name === 'verify';
   tabsEl.hidden = isSubView;
 
-  $('#loginTitle').textContent = isAdminView ? '🔑 관리자 로그인' : '🔒 P2P 파일 전송';
+  $('#loginTitle').textContent = isAdminView ? '관리자 로그인' : '로그인';
   $('#loginSub').textContent = isAdminView
     ? '관리자 전용 비밀번호로 입장합니다.'
-    : '비밀번호 없이 소셜 계정으로 간편하게 로그인하세요.';
+    : '사용할 로그인 방법을 선택하세요.';
 
   if (methods.sharedPassword) {
-    adminBtn.textContent = isAdminView ? '← 일반 로그인' : '🔑 관리자로 로그인';
+    adminBtn.textContent = isAdminView ? '← 일반 로그인' : '관리자로 로그인';
   }
 
   for (const [k, el] of Object.entries(views)) el.hidden = k !== name;
