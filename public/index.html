@@ -111,8 +111,11 @@
       </div>
 
       <div id="status" class="status waiting">
-        <span class="dot"></span><span id="statusText">연결 준비 중…</span>
+        <span class="dot"></span>
+        <span id="statusText" class="status-text">연결 준비 중…</span>
+        <button id="reconnectBtn" type="button" class="small ghost" hidden>다시 연결</button>
       </div>
+      <p id="diagText" class="diag" hidden></p>
 
       <div id="peerInfo" class="peer-info" hidden>
         <div class="sas-box">
@@ -120,9 +123,12 @@
           <div id="sas" class="sas">--- ---</div>
         </div>
         <div class="peer-text">
-          <p>상대방 화면의 코드와 <strong>같은지</strong> 전화·메신저로 확인하세요.
-             다르면 누군가 중간에서 가로채고 있을 수 있으니 바로 나가세요.</p>
-          <div class="label">연결 방식: <span id="route">확인 중…</span></div>
+          <p>상대방 화면의 코드와 <strong>같은지</strong> 확인하세요.
+             파일과 채팅은 <strong>종단간 암호화(E2EE)</strong>되어 서버도 내용을 볼 수 없습니다.</p>
+          <div class="row-between">
+            <span class="label">연결 방식: <strong id="route">확인 중…</strong></span>
+            <button id="p2pBoostBtn" type="button" class="small ghost">⚡ P2P 직통 전환</button>
+          </div>
         </div>
       </div>
 

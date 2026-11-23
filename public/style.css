@@ -148,11 +148,14 @@ input[type="checkbox"] { width: auto; }
 .share { display: flex; gap: 8px; margin: 16px 0; }
 .share input { font-size: .9rem; color: var(--muted); }
 
-.status { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; background: #12162a; margin-bottom: 16px; }
+.status { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; background: #12162a; margin-bottom: 12px; }
+.status-text { flex: 1; }
 .status .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--warn); flex-shrink: 0; }
 .status.waiting .dot { animation: pulse 1.4s infinite; }
 .status.ok .dot { background: var(--ok); }
 .status.error .dot { background: var(--err); }
+.diag { margin: -4px 0 14px; padding: 8px 12px; border-radius: 8px; background: rgba(255, 107, 107, .08); border: 1px solid rgba(255, 107, 107, .28); color: var(--muted); font-size: .82rem; line-height: 1.45; }
+.diag[hidden] { display: none; }
 @keyframes pulse { 50% { opacity: .3; } }
 
 .peer-info {

@@ -1,18 +1,21 @@
 # 📡 P2P File Transfer (Cloudflare Workers + Durable Objects)
 
-친구·가족 등 초대받은 사람끼리 **브라우저에서 직접(WebRTC DataChannel)** 파일을 주고받는 프라이빗 P2P 파일 전송 웹앱입니다.
+친구·가족 등 초대받은 사람끼리 브라우저에서 **종단간 암호화(E2EE)**로 파일 전송과 채팅을 하는 프라이빗 웹앱입니다.
 
-- **내 PC를 꺼도 24시간 동작** (Cloudflare Workers 무료 플랜)
-- **도메인 없이 완전 무료** (`*.workers.dev` + SQLite Durable Objects)
-- **파일은 서버를 절대 거치지 않음** — Cloudflare에는 웹페이지·인증·시그널링만 통과하고, 실제 파일은 브라우저끼리 DTLS 암호화 직통 전송
+- **방화벽·LTE/5G에서도 100% 연결 (TURN 불필요)**: 기본 연결이 **Cloudflare Durable Object 암호화 서버 중계 (WSS 443 · ECDH P-256 + AES-256-GCM)**이므로 NAT/방화벽 제약 없이 즉시 연결되며, 파일은 디스크에 저장되지 않고 메모리로만 통과합니다(서버도 해독 불가).
+- **선택적 WebRTC P2P 직통 전환 (`⚡ P2P 직통 전환`)**: 같은 네트워크/대용량 전송 시 버튼 한 번으로 P2P 직통 연결로 전환 가능하며, 실패해도 서버 중계 연결이 끊기지 않고 유지됩니다.
+- **내 PC를 꺼도 24시간 동작 & 도메인 없이 무료** (`*.workers.dev` + SQLite Durable Objects + Workers AI 무료)
 - **GitHub에 그대로 공개 가능** — 비밀값·API 키가 코드에 전혀 없고 Cloudflare Secret으로만 주입
 
 ---
 
 ## 주요 기능
 
-- **직접 P2P 전송 (WebRTC DataChannel)**: 64KB 청크 + `bufferedAmountLowThreshold` 백프레셔 + Chrome/Edge **`showSaveFilePicker` 디스크 직접 스트리밍** + 수신 전 수락/거절
-- **P2P 암호화 채팅**: 파일 전송과 분리된 전용 DataChannel(`chat`)로 대용량 전송 중에도 지연 없이 대화 (서버 저장 없음, 입력 중 표시, 백그라운드 탭 알림)
+- **종단간 암호화 파일 전송**:
+  - 기본: Cloudflare 암호화 서버 중계 (256KB 바이너리 청크 + 슬라이딩 윈도우 백프레셔, TURN 없이 모든 네트워크 통과)
+  - 선택: WebRTC P2P DataChannel 직통 (64KB 청크 + 조기 ICE Candidate 큐잉 + 자동 ICE Restart + 경로 진단)
+  - Chrome/Edge **`showSaveFilePicker` 디스크 직접 스트리밍** + 수신 전 수락/거절
+- **종단간 암호화 실시간 채팅**: 파일 전송과 함께 즉시 대화 (서버 미저장, 입력 중 표시, 백그라운드 탭 알림)
 - **6자리 보안 확인 코드 (SAS)**: 양쪽 DTLS 인증서 지문으로 계산한 코드로 시그널링 구간 MITM 탐지
 - **이메일 회원가입 + 6자리 이메일 인증**:
   - Durable Object SQLite(`AccountStore`)에 PBKDF2-SHA256(100,000회) 해시 저장

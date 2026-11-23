@@ -69,6 +69,21 @@ const mockServer = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply } }] }));
     }
+    if (req.url.includes('/credentials/generate-ice-servers')) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(
+        JSON.stringify({
+          iceServers: [
+            { urls: ['stun:stun.cloudflare.com:3478'] },
+            {
+              urls: ['turn:turn.cloudflare.com:3478?transport=udp', 'turns:turn.cloudflare.com:443?transport=tcp'],
+              username: 'mock-turn-user',
+              credential: 'mock-turn-cred',
+            },
+          ],
+        })
+      );
+    }
     res.writeHead(404);
     res.end();
   });
@@ -106,6 +121,9 @@ const child = spawn(
     '--var', `AI_API_BASE:http://127.0.0.1:${mockPort}`,
     '--var', 'AI_API_KEY:mock-ai-key',
     '--var', 'AI_MODEL:mock-gpt',
+    '--var', `CF_TURN_API_BASE:http://127.0.0.1:${mockPort}`,
+    '--var', 'CF_TURN_TOKEN_ID:mock-turn-id',
+    '--var', 'CF_TURN_API_TOKEN:mock-turn-token',
     '--var', 'ALLOW_SHORT_PASS_TTL:1',
     '--show-interactive-dev-session=false',
     '--log-level', 'error',
@@ -138,9 +156,12 @@ function connectWs(qs, { cookie, origin = BASE } = {}) {
     });
     const inbox = [];
     const waiters = [];
-    ws.on('message', (raw) => {
-      const text = raw.toString();
-      const msg = text === 'pong' ? 'pong' : JSON.parse(text);
+    ws.on('message', (raw, isBinary) => {
+      const msg = isBinary
+        ? Buffer.from(raw)
+        : raw.toString() === 'pong'
+          ? 'pong'
+          : JSON.parse(raw.toString());
       const w = waiters.shift();
       if (w) w(msg); else inbox.push(msg);
     });
@@ -410,7 +431,11 @@ try {
     assert.equal((await postJson('/api/auth/pass', { code: aiCode })).status, 401);
   });
 
-  await test('시그널링: 방 생성 → Origin 거부 → ping/pong → SDP 중계 → 정원 초과 → 퇴장', async () => {
+  await test('시그널링 + E2EE 서버 중계(바이너리 청크 포함) + TURN /config 검증', async () => {
+    const cfg = await (await fetch(`${BASE}/config`, { headers: { cookie: adminCookie } })).json();
+    assert.equal(cfg.hasTurn, true);
+    assert.ok(cfg.iceServers.some((s) => JSON.stringify(s.urls).includes('turns:')));
+
     await assert.rejects(connectWs('room=ABCDEF', { cookie: adminCookie, origin: 'https://evil.example' }), /403/);
 
     const { room } = await (await postJson('/api/rooms', {}, { cookie: adminCookie })).json();
@@ -424,6 +449,22 @@ try {
     assert.deepEqual(await b.next(), { type: 'joined', room, peers: 2 });
     assert.deepEqual(await a.next(), { type: 'peer-joined', rejoin: false });
 
+    // E2EE 공개키 교환 & 암호화 제어/채팅 중계
+    a.sendJson({ type: 'e2ee', data: { pub: { kty: 'EC' }, reply: false } });
+    assert.deepEqual(await b.next(), { type: 'e2ee', data: { pub: { kty: 'EC' }, reply: false } });
+
+    a.sendJson({ type: 'relay', data: { iv: 'abc', ct: 'xyz' } });
+    assert.deepEqual(await b.next(), { type: 'relay', data: { iv: 'abc', ct: 'xyz' } });
+
+    // 바이너리 암호화 파일 청크 중계 (256KB)
+    const sampleChunk = Buffer.alloc(256 * 1024, 0xab);
+    a.send(sampleChunk);
+    const recvChunk = await b.next();
+    assert.ok(Buffer.isBuffer(recvChunk));
+    assert.equal(recvChunk.length, sampleChunk.length);
+    assert.equal(recvChunk[0], 0xab);
+
+    // WebRTC SDP offer 중계 (선택적 P2P 직통 전환용)
     a.sendJson({ type: 'signal', data: { description: { type: 'offer', sdp: 'v=0' } } });
     assert.deepEqual(await b.next(), { type: 'signal', data: { description: { type: 'offer', sdp: 'v=0' } } });
 

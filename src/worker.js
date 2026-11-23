@@ -165,6 +165,7 @@ function buildAdminActions(request, env, actor) {
           guestPass: cfg.guestPass,
           access: cfg.access,
           aiMcpEnabled: (env.ADMIN_API_KEY || '').trim().length >= 16,
+          turnConfigured: !!((env.CF_TURN_TOKEN_ID && env.CF_TURN_API_TOKEN) || list(env.TURN_URLS).length),
         },
         stats,
       };
@@ -187,17 +188,25 @@ function buildAdminActions(request, env, actor) {
 
 async function buildIceServers(env) {
   const servers = [];
-  const stuns = env.STUN_URLS === undefined ? ['stun:stun.l.google.com:19302'] : list(env.STUN_URLS);
+  let hasTurn = false;
+  let turnError = null;
+
+  const stuns =
+    env.STUN_URLS === undefined
+      ? ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302']
+      : list(env.STUN_URLS);
   if (stuns.length) servers.push({ urls: stuns });
 
+  // 방법 1: Cloudflare Realtime TURN (월 1TB 무료, UDP/TCP/TLS 443 지원)
   if (env.CF_TURN_TOKEN_ID && env.CF_TURN_API_TOKEN) {
+    const turnBase = (env.CF_TURN_API_BASE || 'https://rtc.live.cloudflare.com').replace(/\/+$/, '');
     try {
       const res = await fetch(
-        `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(env.CF_TURN_TOKEN_ID)}/credentials/generate-ice-servers`,
+        `${turnBase}/v1/turn/keys/${encodeURIComponent(env.CF_TURN_TOKEN_ID.trim())}/credentials/generate-ice-servers`,
         {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${env.CF_TURN_API_TOKEN}`,
+            Authorization: `Bearer ${env.CF_TURN_API_TOKEN.trim()}`,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({ ttl: 3600 }),
@@ -205,11 +214,27 @@ async function buildIceServers(env) {
       );
       if (res.ok) {
         const data = await res.json();
-        if (Array.isArray(data.iceServers)) servers.push(...data.iceServers);
+        const items = Array.isArray(data.iceServers)
+          ? data.iceServers
+          : data.iceServers && typeof data.iceServers === 'object'
+            ? [data.iceServers]
+            : [];
+        for (const item of items) {
+          servers.push(item);
+          const urls = Array.isArray(item.urls) ? item.urls : [item.urls];
+          if (urls.some((u) => /^turns?:/i.test(String(u || '')))) hasTurn = true;
+        }
+      } else {
+        turnError = `Cloudflare TURN API 오류 (${res.status})`;
+        console.error(turnError, await res.text().catch(() => ''));
       }
-    } catch { /* STUN 폴백 */ }
+    } catch (err) {
+      turnError = `Cloudflare TURN 연결 실패: ${err?.message || err}`;
+      console.error(turnError);
+    }
   }
 
+  // 방법 2: 직접 운영하는 coturn (HMAC-SHA1 임시 자격 증명)
   const turns = list(env.TURN_URLS);
   if (turns.length) {
     if (env.TURN_SECRET) {
@@ -226,12 +251,14 @@ async function buildIceServers(env) {
       let bin = '';
       for (const b of sig) bin += String.fromCharCode(b);
       servers.push({ urls: turns, username, credential: btoa(bin) });
+      hasTurn = true;
     } else if (env.TURN_USERNAME) {
       servers.push({ urls: turns, username: env.TURN_USERNAME, credential: env.TURN_CREDENTIAL || '' });
+      hasTurn = true;
     }
   }
 
-  return servers;
+  return { iceServers: servers, hasTurn, ...(turnError ? { turnError } : {}) };
 }
 
 // ================================================================ 라우터
@@ -355,7 +382,7 @@ export default {
 
     // 6) ICE 설정
     if (p === '/config' && request.method === 'GET') {
-      return json(request, 200, { iceServers: await buildIceServers(env) });
+      return json(request, 200, await buildIceServers(env));
     }
 
     // 7) 방 생성
