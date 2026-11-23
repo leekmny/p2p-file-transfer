@@ -62,7 +62,7 @@ function switchView(name) {
   $('#loginTitle').textContent = isAdminView ? '🔑 관리자 로그인' : '🔒 P2P 파일 전송';
   $('#loginSub').textContent = isAdminView
     ? '관리자 전용 비밀번호로 입장합니다.'
-    : '비밀번호 없이 Google 계정으로 간편하게 로그인하세요.';
+    : '비밀번호 없이 소셜 계정으로 간편하게 로그인하세요.';
 
   if (methods.sharedPassword) {
     adminBtn.textContent = isAdminView ? '← 일반 로그인' : '🔑 관리자로 로그인';
@@ -85,18 +85,23 @@ async function init() {
 
   const next = encodeURIComponent(nextUrl());
 
-  // Google / GitHub 버튼 구성
+  // Google / GitHub 버튼 구성 (연동된 소셜 버튼만 깔끔하게 표시)
   googleBtn.href = `/api/auth/oauth/google?next=${next}`;
-  if (!methods.googleOAuth) {
+  githubBtn.href = `/api/auth/oauth/github?next=${next}`;
+  const anySocial = methods.googleOAuth || methods.githubOAuth;
+  if (anySocial) {
+    googleBtn.hidden = !methods.googleOAuth;
+    githubBtn.hidden = !methods.githubOAuth;
+  } else {
+    googleBtn.hidden = false;
     googleBtn.classList.add('disabled');
     googleBtn.addEventListener('click', (e) => {
       e.preventDefault();
-      showError('Google OAuth가 아직 설정되지 않았습니다. 관리자는 오른쪽 위 "관리자로 로그인"을 이용하세요.');
+      showError('소셜 로그인이 아직 설정되지 않았습니다. 관리자는 오른쪽 위 "관리자로 로그인"을 이용하세요.');
     });
+    githubBtn.hidden = true;
   }
-  githubBtn.href = `/api/auth/oauth/github?next=${next}`;
-  githubBtn.hidden = !methods.githubOAuth;
-  oauthHintEl.hidden = methods.googleOAuth || methods.githubOAuth;
+  oauthHintEl.hidden = anySocial;
 
   // 탭 노출 설정 (비밀번호/이메일 회원가입은 활성화되었을 때만 보조 탭 표시)
   const setTab = (tab, visible) => {
