@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>P2P 파일 전송</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="container">
+    <header class="top">
+      <div>
+        <h1>📡 P2P 파일 전송</h1>
+        <p class="sub">파일은 서버를 거치지 않고 브라우저끼리 직접(WebRTC, 암호화) 전송됩니다.</p>
+      </div>
+      <button id="logoutBtn" class="ghost small">로그아웃</button>
+    </header>
+
+    <!-- 시작 화면 -->
+    <section id="home" class="card">
+      <button id="createBtn" class="primary big">새 방 만들기</button>
+      <div class="divider"><span>또는 코드로 참여</span></div>
+      <form id="joinForm" class="join">
+        <input id="codeInput" maxlength="6" placeholder="방 코드 6자리" autocomplete="off" spellcheck="false" />
+        <button type="submit">참여</button>
+      </form>
+      <p id="homeError" class="error" hidden></p>
+    </section>
+
+    <!-- 방 화면 -->
+    <section id="room" class="card" hidden>
+      <div class="room-head">
+        <div>
+          <div class="label">방 코드</div>
+          <div id="roomCode" class="code"></div>
+        </div>
+        <button id="leaveBtn" class="ghost">나가기</button>
+      </div>
+
+      <div class="share">
+        <input id="shareLink" readonly />
+        <button id="copyBtn">링크 복사</button>
+      </div>
+
+      <div id="status" class="status waiting">
+        <span class="dot"></span><span id="statusText">연결 준비 중…</span>
+      </div>
+
+      <div id="peerInfo" class="peer-info" hidden>
+        <div class="sas-box">
+          <div class="label">보안 확인 코드</div>
+          <div id="sas" class="sas">--- ---</div>
+        </div>
+        <div class="peer-text">
+          <p>상대방 화면의 코드와 <strong>같은지</strong> 전화·메신저로 확인하세요.
+             다르면 누군가 중간에서 가로채고 있을 수 있으니 바로 나가세요.</p>
+          <div class="label">연결 방식: <span id="route">확인 중…</span></div>
+        </div>
+      </div>
+
+      <label id="dropZone" class="drop">
+        <input id="fileInput" type="file" multiple hidden />
+        <strong>파일을 끌어다 놓거나 클릭해서 선택</strong>
+        <span>여러 개 가능 · 상대방이 수락하면 전송됩니다</span>
+      </label>
+
+      <ul id="transfers" class="transfers" data-empty="아직 전송 내역이 없습니다."></ul>
+    </section>
+
+    <footer>상대방에게 링크나 방 코드를 공유하세요. 두 사람 모두 페이지를 열어 둔 상태여야 전송됩니다.</footer>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
