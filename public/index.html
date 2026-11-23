@@ -133,6 +133,20 @@
       </label>
 
       <ul id="transfers" class="transfers" data-empty="아직 전송 내역이 없습니다."></ul>
+
+      <!-- P2P 암호화 채팅 -->
+      <section class="chat-box">
+        <div class="chat-head">
+          <strong>💬 P2P 암호화 채팅</strong>
+          <span class="label">서버 저장 없음 · 파일 전송 중에도 지연 없이 대화</span>
+        </div>
+        <div id="chatLog" class="chat-log" data-empty="상대방과 연결되면 대화를 시작할 수 있습니다."></div>
+        <div id="chatTyping" class="chat-typing" hidden>상대방이 입력 중…</div>
+        <form id="chatForm" class="chat-form">
+          <textarea id="chatInput" rows="1" maxlength="4000" placeholder="메시지 입력… (Enter 전송 · Shift+Enter 줄바꿈)" disabled></textarea>
+          <button id="chatSendBtn" type="submit" class="primary" disabled>전송</button>
+        </form>
+      </section>
     </section>
 
     <footer>상대방에게 링크나 방 코드를 공유하세요. 두 사람 모두 페이지를 열어 둔 상태여야 전송됩니다.</footer>

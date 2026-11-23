@@ -12,6 +12,7 @@
 ## 주요 기능
 
 - **직접 P2P 전송 (WebRTC DataChannel)**: 64KB 청크 + `bufferedAmountLowThreshold` 백프레셔 + Chrome/Edge **`showSaveFilePicker` 디스크 직접 스트리밍** + 수신 전 수락/거절
+- **P2P 암호화 채팅**: 파일 전송과 분리된 전용 DataChannel(`chat`)로 대용량 전송 중에도 지연 없이 대화 (서버 저장 없음, 입력 중 표시, 백그라운드 탭 알림)
 - **6자리 보안 확인 코드 (SAS)**: 양쪽 DTLS 인증서 지문으로 계산한 코드로 시그널링 구간 MITM 탐지
 - **이메일 회원가입 + 6자리 이메일 인증**:
   - Durable Object SQLite(`AccountStore`)에 PBKDF2-SHA256(100,000회) 해시 저장

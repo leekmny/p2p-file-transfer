@@ -18,9 +18,15 @@ let pingTimer = null;
 let reconnectTimer = null;
 let pc = null;
 let channel = null;
+let chatChannel = null;
 let roomCode = null;
 let authMode = 'cookie';
 let isAdmin = false;
+let myName = '';
+let peerName = '상대방';
+let unreadChat = 0;
+let typingHideTimer = null;
+let lastTypingSent = 0;
 let iceServers = [];
 let signalChain = Promise.resolve();
 
@@ -67,11 +73,15 @@ async function checkSession() {
       isAdmin = !!data.isAdmin;
       const badge = $('#userBadge');
       if (data.email) {
+        myName = data.email.split('@')[0].slice(0, 30);
         badge.textContent = data.email;
         badge.hidden = false;
       } else if (data.isGuest) {
+        myName = '게스트';
         badge.textContent = '임시 게스트';
         badge.hidden = false;
+      } else if (isAdmin) {
+        myName = '관리자';
       }
       $('#adminPassToggle').hidden = !isAdmin;
       $('#aiToggle').hidden = !isAdmin;
@@ -160,6 +170,33 @@ function bindUI() {
     if (sending || incoming || sendQueue.length) {
       e.preventDefault();
       e.returnValue = '';
+    }
+  });
+
+  // P2P 채팅 UI
+  const chatInput = $('#chatInput');
+  $('#chatForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendChatMessage();
+  });
+  chatInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+  chatInput.addEventListener('input', () => {
+    chatInput.style.height = 'auto';
+    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 110)}px`;
+    if (isChatOpen() && Date.now() - lastTypingSent > 1500) {
+      lastTypingSent = Date.now();
+      chatChannel.send(JSON.stringify({ type: 'typing' }));
+    }
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && unreadChat > 0) {
+      unreadChat = 0;
+      document.title = 'P2P 파일 전송';
     }
   });
 }
@@ -519,11 +556,15 @@ async function startPeer(initiator) {
 
   if (initiator) {
     setupChannel(myPc.createDataChannel('files', { ordered: true }));
+    setupChatChannel(myPc.createDataChannel('chat', { ordered: true }));
     const offer = await myPc.createOffer();
     await myPc.setLocalDescription(offer);
     wsSend({ type: 'signal', data: { description: myPc.localDescription } });
   } else {
-    myPc.ondatachannel = (e) => setupChannel(e.channel);
+    myPc.ondatachannel = (e) => {
+      if (e.channel.label === 'chat') setupChatChannel(e.channel);
+      else setupChannel(e.channel);
+    };
   }
 }
 
@@ -561,7 +602,122 @@ function setupChannel(ch) {
   ch.onmessage = (e) => onChannelMessage(e.data);
 }
 
+function setupChatChannel(ch) {
+  chatChannel = ch;
+  ch.onopen = () => {
+    if (chatChannel !== ch) return;
+    setChatEnabled(true);
+    if (myName) ch.send(JSON.stringify({ type: 'hello', name: myName }));
+    appendChatSystem('암호화된 P2P 채팅이 연결되었습니다.');
+  };
+  ch.onclose = () => {
+    if (chatChannel !== ch) return;
+    chatChannel = null;
+    setChatEnabled(false);
+    hideTyping();
+  };
+  ch.onmessage = (e) => {
+    if (typeof e.data !== 'string') return;
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (!msg || typeof msg !== 'object') return;
+
+    if (msg.type === 'hello' && typeof msg.name === 'string') {
+      peerName = msg.name.trim().slice(0, 30) || '상대방';
+    } else if (msg.type === 'typing') {
+      showTyping();
+    } else if (msg.type === 'chat' && typeof msg.text === 'string') {
+      const text = msg.text.slice(0, 4000);
+      if (!text.trim()) return;
+      hideTyping();
+      appendChatMessage('peer', peerName, text, msg.ts);
+      if (document.hidden) {
+        unreadChat += 1;
+        document.title = `(${unreadChat}) 💬 새 메시지 · P2P 파일 전송`;
+      }
+    }
+  };
+}
+
+function isChatOpen() {
+  return !!chatChannel && chatChannel.readyState === 'open';
+}
+
+function setChatEnabled(enabled) {
+  $('#chatInput').disabled = !enabled;
+  $('#chatSendBtn').disabled = !enabled;
+}
+
+function sendChatMessage() {
+  if (!isChatOpen()) return;
+  const input = $('#chatInput');
+  const text = input.value.trim();
+  if (!text) return;
+  const ts = Date.now();
+  chatChannel.send(JSON.stringify({ type: 'chat', text: text.slice(0, 4000), ts }));
+  appendChatMessage('me', '나', text.slice(0, 4000), ts);
+  input.value = '';
+  input.style.height = 'auto';
+  input.focus();
+}
+
+function showTyping() {
+  const el = $('#chatTyping');
+  el.textContent = `${peerName} 입력 중…`;
+  el.hidden = false;
+  clearTimeout(typingHideTimer);
+  typingHideTimer = setTimeout(hideTyping, 2500);
+}
+
+function hideTyping() {
+  clearTimeout(typingHideTimer);
+  typingHideTimer = null;
+  $('#chatTyping').hidden = true;
+}
+
+function formatClock(ts) {
+  const d = new Date(Number.isFinite(ts) ? ts : Date.now());
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function appendChatMessage(side, sender, text, ts) {
+  const log = $('#chatLog');
+  const item = document.createElement('div');
+  item.className = `chat-msg ${side}`;
+
+  const meta = document.createElement('div');
+  meta.className = 'chat-meta';
+  meta.textContent = `${sender} · ${formatClock(ts)}`;
+
+  const body = document.createElement('div');
+  body.className = 'chat-text';
+  body.textContent = text; // textContent만 사용 (XSS 원천 차단)
+
+  item.append(meta, body);
+  log.append(item);
+  log.scrollTop = log.scrollHeight;
+}
+
+function appendChatSystem(text) {
+  const log = $('#chatLog');
+  const el = document.createElement('div');
+  el.className = 'chat-sys';
+  el.textContent = text;
+  log.append(el);
+  log.scrollTop = log.scrollHeight;
+}
+
 function closePeer() {
+  if (chatChannel) {
+    const ch = chatChannel;
+    chatChannel = null;
+    ch.onclose = null;
+    ch.close();
+  }
+  setChatEnabled(false);
+  hideTyping();
+  peerName = '상대방';
+
   if (channel) {
     const ch = channel;
     channel = null;
@@ -932,6 +1088,11 @@ function leaveRoom(notify = true) {
   for (const job of sendQueue) job.ui.fail('취소됨');
   sendQueue.length = 0;
   roomCode = null;
+  unreadChat = 0;
+  document.title = 'P2P 파일 전송';
+  $('#chatLog').replaceChildren();
+  $('#chatInput').value = '';
+  $('#chatInput').style.height = 'auto';
   history.replaceState(null, '', location.pathname);
   $('#room').hidden = true;
   $('#home').hidden = false;
