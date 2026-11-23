@@ -22,7 +22,19 @@ body {
 }
 
 .container { max-width: 640px; margin: 0 auto; padding: 40px 20px; }
-.container.narrow { max-width: 440px; padding-top: 10vh; }
+.container.narrow { max-width: 440px; padding-top: 8vh; }
+.login-topbar { display: flex; justify-content: flex-end; margin-bottom: 10px; min-height: 30px; }
+.setup-hint {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(245, 185, 66, .1);
+  border: 1px solid rgba(245, 185, 66, .35);
+  color: var(--warn);
+  font-size: .84rem;
+  line-height: 1.45;
+}
+.setup-hint[hidden] { display: none; }
 
 h1 { margin: 0 0 6px; font-size: 1.8rem; }
 .sub { margin: 0 0 24px; color: var(--muted); }

@@ -10,19 +10,26 @@
 </head>
 <body>
   <main class="container narrow">
-    <section class="card">
-      <h1>🔒 P2P 파일 전송</h1>
-      <p class="sub">초대받은 사람만 사용할 수 있습니다.</p>
+    <div class="login-topbar">
+      <button id="adminLoginBtn" type="button" class="ghost small" hidden>🔑 관리자로 로그인</button>
+    </div>
 
-      <nav id="tabs" class="tabs" hidden>
-        <button type="button" data-tab="email" hidden>로그인</button>
-        <button type="button" data-tab="register" hidden>회원가입</button>
-        <button type="button" data-tab="shared" hidden>비밀번호</button>
+    <section class="card">
+      <h1 id="loginTitle">🔒 P2P 파일 전송</h1>
+      <p id="loginSub" class="sub">이메일 인증 후 로그인해서 사용할 수 있습니다.</p>
+
+      <nav id="tabs" class="tabs">
+        <button type="button" data-tab="email" class="active">이메일 로그인</button>
+        <button type="button" data-tab="register">회원가입</button>
         <button type="button" data-tab="pass" hidden>특별 코드</button>
       </nav>
 
-      <!-- 1) 이메일 로그인 -->
-      <form id="emailLoginForm" class="stack" hidden>
+      <p id="emailSetupHint" class="setup-hint" hidden>
+        이메일 인증 발송 설정이 아직 연결되지 않았습니다. 관리자는 오른쪽 위 <strong>관리자로 로그인</strong>을 사용하세요.
+      </p>
+
+      <!-- 1) 이메일 로그인 (기본) -->
+      <form id="emailLoginForm" class="stack">
         <input id="loginEmail" type="email" placeholder="이메일" autocomplete="email" required />
         <input id="loginPassword" type="password" placeholder="비밀번호" autocomplete="current-password" required />
         <button type="submit" class="primary">로그인</button>
@@ -47,17 +54,19 @@
         </div>
       </form>
 
-      <!-- 3) 공유 비밀번호 로그인 -->
-      <form id="sharedForm" class="join" hidden>
-        <input id="sharedPassword" type="password" placeholder="비밀번호" autocomplete="current-password" required />
-        <button type="submit" class="primary">입장</button>
-      </form>
-
-      <!-- 4) 관리자 발급 10분 임시 특별 코드 -->
+      <!-- 3) 관리자 발급 10분 임시 특별 코드 -->
       <form id="passForm" class="stack" hidden>
         <p class="hint">관리자가 발급한 10분 임시 특별 코드를 입력하면 별도 인증 없이 바로 입장합니다.</p>
         <input id="passCode" type="text" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" class="code-input" required />
         <button type="submit" class="primary">특별 코드로 바로 입장</button>
+      </form>
+
+      <!-- 4) 관리자 비밀번호 로그인 (오른쪽 위 작은 버튼으로 전환) -->
+      <form id="sharedForm" class="stack" hidden>
+        <p class="hint">관리자 비밀번호로 바로 입장합니다.</p>
+        <input id="sharedPassword" type="password" placeholder="관리자 비밀번호" autocomplete="current-password" required />
+        <button type="submit" class="primary">관리자 로그인</button>
+        <button type="button" id="backFromAdminBtn" class="ghost small">← 이메일 로그인으로 돌아가기</button>
       </form>
 
       <p id="info" class="info" hidden></p>
