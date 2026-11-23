@@ -2,6 +2,7 @@
 // - 공유 비밀번호(APP_PASSWORD), 이메일 계정(AccountStore), 10분 임시 특별 코드(guest) → HMAC-SHA256 세션 쿠키
 // - Cloudflare Access: Cf-Access-Jwt-Assertion (RS256) JWKS 서명 검증
 import { hasEmailProvider } from './email.js';
+import { oauthProviders } from './oauth.js';
 
 const COOKIE_NAME = 'p2pft_sid';
 const encoder = new TextEncoder();
@@ -62,7 +63,14 @@ export async function verifyPassword(input, expected) {
 }
 
 function sessionSecretSource(env) {
-  return env.SESSION_SECRET || env.APP_PASSWORD || env.INVITE_CODE || '';
+  return (
+    env.SESSION_SECRET ||
+    env.APP_PASSWORD ||
+    env.INVITE_CODE ||
+    env.GOOGLE_CLIENT_SECRET ||
+    env.GITHUB_CLIENT_SECRET ||
+    ''
+  );
 }
 
 async function sessionKey(env) {
@@ -225,22 +233,33 @@ export function authConfig(env) {
   const sharedPassword = !!(env.APP_PASSWORD && env.APP_PASSWORD.length >= 8);
   const inviteRequired = !!(env.INVITE_CODE && env.INVITE_CODE.length >= 4);
   const hasAllowedEmails = allowedEmailsList(env).length > 0;
+  const hasAdminEmails = adminEmailsList(env).length > 0;
   const openSignup = env.ALLOW_OPEN_SIGNUP === '1';
   const hasSessionSecret = sessionSecretSource(env).length >= 8;
 
   // 이메일 회원가입은 메일 발송기 + (초대코드 or 허용 이메일 or 명시적 오픈) + 세션키가 있을 때 활성화
   const emailAuth = hasEmailProvider(env) && (inviteRequired || hasAllowedEmails || openSignup) && hasSessionSecret;
 
+  // 소셜 로그인(Google / GitHub): 클라이언트 ID+시크릿 + 접근 제한(허용 이메일/관리자 이메일/초대코드/오픈)
+  const oauth = oauthProviders(env);
+  const oauthGateReady = inviteRequired || hasAllowedEmails || hasAdminEmails || openSignup;
+  const googleOAuth = oauth.google && oauthGateReady && hasSessionSecret;
+  const githubOAuth = oauth.github && oauthGateReady && hasSessionSecret;
+
+  const cookieAuth = sharedPassword || emailAuth || googleOAuth || githubOAuth;
+
   // 임시 특별 코드: 세션 서명 키가 있으면 사용 가능 (관리자가 발급 → 게스트는 모든 인증 없이 입장)
-  const guestPass = hasSessionSecret && (sharedPassword || emailAuth || access);
+  const guestPass = hasSessionSecret && (cookieAuth || access);
 
   return {
     access,
     sharedPassword,
     emailAuth,
+    googleOAuth,
+    githubOAuth,
     inviteRequired,
     guestPass,
-    cookieAuth: sharedPassword || emailAuth,
+    cookieAuth,
   };
 }
 

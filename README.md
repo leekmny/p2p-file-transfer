@@ -52,12 +52,30 @@ npm run deploy
 
 배포 후 아래 중 원하는 인증/관리 기능을 Secret으로 등록합니다 (코드는 수정 불필요).
 
-### A. 기본 비밀번호 로그인 (가장 빠름)
+### A. Google 계정 로그인 켜기 (가장 추천 — 비밀번호 없음 · 메일 서버 불필요 · 무료)
+별도 비밀번호를 만들거나 메일 발송 서비스를 붙이지 않고, Google이 이메일 본인 인증을 대신 처리합니다.
+
+1. [Google Cloud Console → 사용자 인증 정보](https://console.cloud.google.com/apis/credentials) → **사용자 인증 정보 만들기 → OAuth 클라이언트 ID** (애플리케이션 유형: **웹 애플리케이션**)
+2. **승인된 리디렉션 URI**에 내 워커 콜백 주소 추가:
+   ```text
+   https://<내-워커-주소>.workers.dev/api/auth/oauth/google/callback
+   ```
+3. 발급된 클라이언트 ID/시크릿과 허용 이메일(또는 초대 코드)을 Secret으로 등록:
+   ```bash
+   npx wrangler secret put GOOGLE_CLIENT_ID
+   npx wrangler secret put GOOGLE_CLIENT_SECRET
+   npx wrangler secret put ADMIN_EMAILS     # 내 구글 이메일 (관리자 권한 부여)
+   npx wrangler secret put ALLOWED_EMAILS   # 허용할 나+친구 구글 이메일 (쉼표 구분)
+   # 또는 ALLOWED_EMAILS 대신 INVITE_CODE를 두면 첫 Google 로그인 시 1회만 초대 코드를 묻고 이후 1클릭 입장
+   ```
+*(GitHub 로그인도 `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` 등록 시 자동 활성화됩니다. 콜백 URL: `/api/auth/oauth/github/callback`)*
+
+### B. 관리자 비밀번호 로그인 (오른쪽 위 작은 `🔑 관리자로 로그인` 버튼)
 ```bash
 npx wrangler secret put APP_PASSWORD
 ```
 
-### B. 이메일 회원가입 + 6자리 이메일 인증 켜기
+### C. (선택) 이메일 회원가입 + 6자리 이메일 인증 켜기
 1. 초대 코드 & 관리자 이메일 등록:
    ```bash
    npx wrangler secret put INVITE_CODE      # 친구에게 알려줄 가입 초대 코드

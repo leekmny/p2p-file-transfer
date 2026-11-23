@@ -23,10 +23,19 @@ const persistDir = mkdtempSync(path.join(tmpdir(), 'p2pft-test-'));
 // 실제 HTTP 인증 메일 발송을 캡처하는 로컬 테스트 Webhook 서버 + OpenAI 호환 모의 AI 서버
 const sentEmails = [];
 const mockServer = http.createServer((req, res) => {
+  if (req.method === 'GET' && req.url === '/oauth/google/userinfo') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ email: 'oauth-friend@gmail.com', email_verified: true }));
+  }
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
-    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const rawText = Buffer.concat(chunks).toString('utf8');
+    if (req.url === '/oauth/google/token') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ access_token: 'mock-google-token' }));
+    }
+    const body = rawText ? JSON.parse(rawText) : {};
     if (req.url === '/send') {
       if (req.headers['x-webhook-secret'] !== WEBHOOK_SECRET && body.secret !== WEBHOOK_SECRET) {
         res.writeHead(403);
@@ -68,6 +77,14 @@ const mockServer = http.createServer((req, res) => {
         : `임시 코드 ${toolOut.revokedCount ?? 0}개를 모두 파기했습니다.`;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply } }] }));
+    }
+    if (req.url === '/oauth/google/token') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ access_token: 'mock-google-token' }));
+    }
+    if (req.url === '/oauth/google/userinfo') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ email: 'oauth-friend@gmail.com', email_verified: true }));
     }
     if (req.url.includes('/credentials/generate-ice-servers')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -124,6 +141,11 @@ const child = spawn(
     '--var', `CF_TURN_API_BASE:http://127.0.0.1:${mockPort}`,
     '--var', 'CF_TURN_TOKEN_ID:mock-turn-id',
     '--var', 'CF_TURN_API_TOKEN:mock-turn-token',
+    '--var', 'GOOGLE_CLIENT_ID:mock-google-id',
+    '--var', 'GOOGLE_CLIENT_SECRET:mock-google-secret',
+    '--var', `OAUTH_GOOGLE_AUTH_URL:http://127.0.0.1:${mockPort}/oauth/google/auth`,
+    '--var', `OAUTH_GOOGLE_TOKEN_URL:http://127.0.0.1:${mockPort}/oauth/google/token`,
+    '--var', `OAUTH_GOOGLE_USERINFO_URL:http://127.0.0.1:${mockPort}/oauth/google/userinfo`,
     '--var', 'ALLOW_SHORT_PASS_TTL:1',
     '--show-interactive-dev-session=false',
     '--log-level', 'error',
@@ -429,6 +451,63 @@ try {
     );
     assert.equal(revRes.status, 200);
     assert.equal((await postJson('/api/auth/pass', { code: aiCode })).status, 401);
+  });
+
+  await test('Google OAuth 소셜 로그인: 시작(PKCE+state) → 콜백 → 첫 로그인 초대코드 1회 확인 → 재로그인 1클릭 통과', async () => {
+    const m = await (await fetch(`${BASE}/api/auth/methods`)).json();
+    assert.equal(m.googleOAuth, true);
+
+    // 1) OAuth 시작 → Google 인증 URL + state 쿠키 발급
+    const startRes = await fetch(`${BASE}/api/auth/oauth/google?next=%2F`, { redirect: 'manual' });
+    assert.equal(startRes.status, 302);
+    const authUrl = new URL(startRes.headers.get('location'));
+    const state = authUrl.searchParams.get('state');
+    assert.ok(state && authUrl.searchParams.get('code_challenge'));
+    const stateCookie = startRes.headers.get('set-cookie').split(';')[0];
+
+    // 위조된 state 콜백 차단
+    const badCb = await fetch(`${BASE}/api/auth/oauth/google/callback?code=abc&state=bad`, {
+      headers: { cookie: stateCookie },
+      redirect: 'manual',
+    });
+    assert.equal(badCb.status, 302);
+    assert.match(badCb.headers.get('location'), /oauth_error=/);
+
+    // 2) 정상 콜백 → 첫 로그인(초대코드 필요) → pending 쿠키 + /login.html?oauth_invite=1
+    const cbRes = await fetch(`${BASE}/api/auth/oauth/google/callback?code=goodcode&state=${encodeURIComponent(state)}`, {
+      headers: { cookie: stateCookie },
+      redirect: 'manual',
+    });
+    assert.equal(cbRes.status, 302);
+    assert.match(cbRes.headers.get('location'), /oauth_invite=1/);
+    const setCookies = cbRes.headers.getSetCookie();
+    const pendingCookie = setCookies.find((c) => c.startsWith('p2pft_oauth_pending=')).split(';')[0];
+
+    // 틀린 초대코드 차단 (403)
+    assert.equal(
+      (await postJson('/api/auth/oauth/complete', { inviteCode: 'WRONG' }, { cookie: pendingCookie })).status,
+      403
+    );
+
+    // 3) 올바른 초대코드 1회 입력 → 회원 등록 + 정식 세션 발급
+    const compRes = await postJson('/api/auth/oauth/complete', { inviteCode: INVITE_CODE }, { cookie: pendingCookie });
+    assert.equal(compRes.status, 200);
+    const oauthCookie = compRes.headers.getSetCookie().find((c) => c.startsWith('p2pft_sid=')).split(';')[0];
+    const ses = await (await fetch(`${BASE}/api/session`, { headers: { cookie: oauthCookie } })).json();
+    assert.equal(ses.email, 'oauth-friend@gmail.com');
+    assert.equal(ses.isAdmin, false);
+
+    // 4) 두 번째 Google 로그인 → 초대코드 묻지 않고 바로 '/'로 1클릭 통과!
+    const start2 = await fetch(`${BASE}/api/auth/oauth/google`, { redirect: 'manual' });
+    const state2 = new URL(start2.headers.get('location')).searchParams.get('state');
+    const stateCookie2 = start2.headers.get('set-cookie').split(';')[0];
+    const cb2 = await fetch(`${BASE}/api/auth/oauth/google/callback?code=good2&state=${encodeURIComponent(state2)}`, {
+      headers: { cookie: stateCookie2 },
+      redirect: 'manual',
+    });
+    assert.equal(cb2.status, 302);
+    assert.equal(cb2.headers.get('location'), '/');
+    assert.ok(cb2.headers.getSetCookie().some((c) => c.startsWith('p2pft_sid=')));
   });
 
   await test('시그널링 + E2EE 서버 중계(바이너리 청크 포함) + TURN /config 검증', async () => {

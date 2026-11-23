@@ -3,20 +3,26 @@
 # 실제 배포 시에는 `npx wrangler secret put <변수명>` 으로 등록합니다.
 
 # ================================================================
-# 1) 공유 비밀번호 로그인 (관리자 빠른 접속 / 초기 설정)
+# 1) 소셜 로그인 (추천 — 비밀번호 없이 Google / GitHub 1클릭 로그인)
+#    메일 서버나 도메인 없이 무료 사용 가능!
+#    외부인 차단을 위해 ALLOWED_EMAILS 또는 INVITE_CODE(첫 로그인 1회 확인)와 함께 쓰세요.
+# ================================================================
+# GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+# GOOGLE_CLIENT_SECRET=GOCSPX-xxxx
+# GITHUB_CLIENT_ID=
+# GITHUB_CLIENT_SECRET=
+# ADMIN_EMAILS=me@gmail.com
+# ALLOWED_EMAILS=me@gmail.com,friend@gmail.com
+# INVITE_CODE=친구에게-알려줄-가입-초대코드
+
+# ================================================================
+# 2) 관리자 비밀번호 로그인 (오른쪽 위 작은 '관리자로 로그인' 버튼)
 # ================================================================
 APP_PASSWORD=
 
 # ================================================================
-# 2) 이메일 회원가입 + 6자리 이메일 인증
-#    아래 3가지가 갖춰지면 회원가입/인증 화면이 자동으로 활성화됩니다:
-#    ① 초대 코드(INVITE_CODE) 또는 허용 이메일(ALLOWED_EMAILS)
-#    ② 메일 발송기 (Resend / Brevo / Webhook 중 1개)
-#    ③ 세션 서명키 (SESSION_SECRET 또는 APP_PASSWORD 또는 INVITE_CODE 8자 이상)
+# 3) (선택) 이메일 회원가입 + 6자리 인증 메일 발송
 # ================================================================
-# INVITE_CODE=친구에게-알려줄-가입-초대코드
-# ALLOWED_EMAILS=me@gmail.com,friend@gmail.com
-# ADMIN_EMAILS=me@gmail.com
 # SESSION_SECRET=충분히-긴-랜덤-세션키
 
 # --- 메일 발송기 (셋 중 1개 선택) ---

@@ -17,6 +17,13 @@ import {
 import { sendVerificationEmail } from './email.js';
 import { handleMcpRequest } from './mcp.js';
 import { aiProviderInfo, runAdminAiChat } from './ai-agent.js';
+import {
+  buildOAuthStart,
+  clearPendingOAuthCookie,
+  handleOAuthCallback,
+  issuePendingOAuthCookie,
+  verifyPendingOAuthCookie,
+} from './oauth.js';
 
 export { SignalingRoom } from './room.js';
 export { AccountStore } from './account-store.js';
@@ -160,6 +167,8 @@ function buildAdminActions(request, env, actor) {
       return {
         auth: {
           emailAuth: cfg.emailAuth,
+          googleOAuth: cfg.googleOAuth,
+          githubOAuth: cfg.githubOAuth,
           inviteRequired: cfg.inviteRequired,
           sharedPassword: cfg.sharedPassword,
           guestPass: cfg.guestPass,
@@ -290,11 +299,31 @@ export default {
       const cfg = authConfig(env);
       return json(request, 200, {
         emailAuth: cfg.emailAuth,
+        googleOAuth: cfg.googleOAuth,
+        githubOAuth: cfg.githubOAuth,
         inviteRequired: cfg.inviteRequired,
         sharedPassword: cfg.sharedPassword,
         guestPass: cfg.guestPass,
         access: cfg.access,
       });
+    }
+
+    // 소셜 로그인 (Google / GitHub OAuth 2.0)
+    if (p === '/api/auth/oauth/google' || p === '/api/auth/oauth/github') {
+      if (request.method !== 'GET') return withSecurityHeaders(request, new Response(null, { status: 405 }));
+      const provider = p.endsWith('/google') ? 'google' : 'github';
+      return startOAuthFlow(request, env, provider);
+    }
+
+    if (p === '/api/auth/oauth/google/callback' || p === '/api/auth/oauth/github/callback') {
+      if (request.method !== 'GET') return withSecurityHeaders(request, new Response(null, { status: 405 }));
+      const provider = p.includes('/google/') ? 'google' : 'github';
+      return finishOAuthCallback(request, env, provider);
+    }
+
+    if (p === '/api/auth/oauth/complete') {
+      if (request.method !== 'POST') return withSecurityHeaders(request, new Response(null, { status: 405 }));
+      return completeOAuthInvite(request, env);
     }
 
     if (p === '/api/auth/register') {
@@ -709,6 +738,11 @@ async function handleEmailLogin(request, env) {
 
   const res = await store.verifyLogin(email, password);
   if (!res.ok) {
+    if (res.error === 'oauth_only') {
+      return json(request, 400, {
+        error: '소셜 계정(Google/GitHub)으로 가입된 이메일입니다. 아래 소셜 로그인 버튼을 이용해 주세요.',
+      });
+    }
     if (res.error === 'not_verified') {
       return json(request, 403, {
         error: 'email_not_verified',
@@ -777,6 +811,106 @@ async function handleSharedPasswordLogin(request, env) {
   await store.clearRateLimit(rlKey);
   const cookie = await issueSessionCookie(request, env, { email: '', role: 'admin' });
   return withSecurityHeaders(request, new Response(null, { status: 204 }), { 'Set-Cookie': cookie });
+}
+
+// ================================================================ 소셜 로그인 (Google / GitHub OAuth)
+function oauthRedirectError(request, message, extraCookies = []) {
+  const headers = new Headers({
+    Location: `/login.html?oauth_error=${encodeURIComponent(message)}`,
+  });
+  for (const c of extraCookies) headers.append('Set-Cookie', c);
+  return withSecurityHeaders(request, new Response(null, { status: 302, headers }));
+}
+
+async function startOAuthFlow(request, env, provider) {
+  const cfg = authConfig(env);
+  const enabled = provider === 'google' ? cfg.googleOAuth : cfg.githubOAuth;
+  if (!enabled) {
+    return oauthRedirectError(request, `${provider === 'google' ? 'Google' : 'GitHub'} 로그인이 아직 설정되지 않았습니다.`);
+  }
+  const url = new URL(request.url);
+  const { authorizeUrl, setCookie } = await buildOAuthStart(request, env, provider, url.searchParams.get('next'));
+  return withSecurityHeaders(request, new Response(null, { status: 302 }), {
+    Location: authorizeUrl,
+    'Set-Cookie': setCookie,
+  });
+}
+
+async function finishOAuthCallback(request, env, provider) {
+  const cfg = authConfig(env);
+  const enabled = provider === 'google' ? cfg.googleOAuth : cfg.githubOAuth;
+  if (!enabled) return oauthRedirectError(request, '소셜 로그인이 비활성화되어 있습니다.');
+
+  const result = await handleOAuthCallback(request, env, provider);
+  if (!result.ok) return oauthRedirectError(request, result.error, [result.clearState]);
+
+  const { email, next, clearState } = result;
+  const admin = isAdminEmail(email, env);
+  const allowed = allowedEmailsList(env);
+
+  // 허용 이메일 목록이 설정된 경우: 목록 또는 관리자 이메일만 허용
+  if (allowed.length && !allowed.includes(email) && !admin) {
+    return oauthRedirectError(request, '접속이 허용되지 않은 계정입니다. 관리자에게 문의하세요.', [clearState]);
+  }
+
+  const store = accountsStub(env);
+  const alreadyMember = await store.isVerifiedUser(email);
+
+  // 허용 목록 없이 초대 코드만 쓰는 경우: 첫 소셜 로그인 시 초대 코드 1회 확인
+  if (!alreadyMember && !admin && !allowed.length && cfg.inviteRequired) {
+    const pendingCookie = await issuePendingOAuthCookie(request, env, { email, provider, next });
+    const headers = new Headers({ Location: `/login.html?oauth_invite=1&email=${encodeURIComponent(email)}` });
+    headers.append('Set-Cookie', clearState);
+    headers.append('Set-Cookie', pendingCookie);
+    return withSecurityHeaders(request, new Response(null, { status: 302, headers }));
+  }
+
+  await store.upsertOAuthUser(email);
+  const sessionCookie = await issueSessionCookie(request, env, { email, role: admin ? 'admin' : 'user' });
+  const headers = new Headers({ Location: next || '/' });
+  headers.append('Set-Cookie', clearState);
+  headers.append('Set-Cookie', sessionCookie);
+  return withSecurityHeaders(request, new Response(null, { status: 302, headers }));
+}
+
+async function completeOAuthInvite(request, env) {
+  const cfg = authConfig(env);
+  if (!cfg.googleOAuth && !cfg.githubOAuth) return json(request, 404, { error: 'disabled' });
+  if (request.headers.get('origin') && !originAllowed(request, env)) {
+    return json(request, 403, { error: 'forbidden' });
+  }
+
+  const store = accountsStub(env);
+  const rlKey = `oauthinv:${await sha256Hex(clientIp(request))}`;
+  if (!(await store.checkRateLimit(rlKey, 5))) {
+    return json(request, 429, { error: '시도가 너무 많습니다. 15분 뒤에 다시 시도하세요.' });
+  }
+
+  const pending = await verifyPendingOAuthCookie(request, env);
+  if (!pending?.email) {
+    return json(request, 401, { error: '소셜 로그인 대기 시간이 만료되었습니다. 다시 시도해 주세요.' });
+  }
+
+  const parsed = await readJsonBody(request, 1024);
+  if (parsed.error) return json(request, 400, { error: '잘못된 요청입니다.' });
+
+  const inviteCode = typeof parsed.data.inviteCode === 'string' ? parsed.data.inviteCode.trim() : '';
+  if (cfg.inviteRequired && !(await constantTimeSecretMatch(inviteCode, env.INVITE_CODE))) {
+    await store.recordRateLimit(rlKey);
+    return json(request, 403, { error: '초대 코드가 올바르지 않습니다.' });
+  }
+
+  await store.clearRateLimit(rlKey);
+  await store.upsertOAuthUser(pending.email);
+  const role = isAdminEmail(pending.email, env) ? 'admin' : 'user';
+  const sessionCookie = await issueSessionCookie(request, env, { email: pending.email, role });
+  const headers = new Headers({ 'Content-Type': 'application/json; charset=utf-8' });
+  headers.append('Set-Cookie', clearPendingOAuthCookie(request));
+  headers.append('Set-Cookie', sessionCookie);
+  return withSecurityHeaders(
+    request,
+    new Response(JSON.stringify({ ok: true, email: pending.email, next: pending.next || '/' }), { status: 200, headers })
+  );
 }
 
 function misconfiguredResponse(request) {

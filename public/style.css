@@ -87,6 +87,25 @@ input[type="checkbox"] { width: auto; }
 .row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 
 .hint { margin: 0; color: var(--muted); font-size: .88rem; line-height: 1.45; }
+.hint.center { text-align: center; margin-top: 4px; font-size: .82rem; }
+.oauth-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 13px 16px;
+  border-radius: 10px;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: .96rem;
+  border: 1px solid var(--border);
+  transition: filter .15s, transform .05s;
+}
+.oauth-btn:hover { filter: brightness(1.06); }
+.oauth-btn.google { background: #ffffff; color: #1f1f1f; border-color: #dadce0; }
+.oauth-btn.github { background: #24292f; color: #ffffff; border-color: #3a4149; }
+.oauth-btn.disabled { opacity: .55; cursor: not-allowed; }
+.oauth-btn[hidden] { display: none; }
 .code-input { text-transform: uppercase; letter-spacing: .25em; text-align: center; font-size: 1.15rem; font-family: ui-monospace, Consolas, monospace; }
 
 .badge {

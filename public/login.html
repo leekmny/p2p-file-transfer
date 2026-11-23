@@ -16,26 +16,64 @@
 
     <section class="card">
       <h1 id="loginTitle">🔒 P2P 파일 전송</h1>
-      <p id="loginSub" class="sub">이메일 인증 후 로그인해서 사용할 수 있습니다.</p>
+      <p id="loginSub" class="sub">비밀번호 없이 Google 계정으로 간편하게 로그인하세요.</p>
 
       <nav id="tabs" class="tabs">
-        <button type="button" data-tab="email" class="active">이메일 로그인</button>
-        <button type="button" data-tab="register">회원가입</button>
+        <button type="button" data-tab="social" class="active">소셜 로그인</button>
         <button type="button" data-tab="pass" hidden>특별 코드</button>
+        <button type="button" data-tab="email" hidden>이메일</button>
+        <button type="button" data-tab="register" hidden>회원가입</button>
       </nav>
 
-      <p id="emailSetupHint" class="setup-hint" hidden>
-        이메일 인증 발송 설정이 아직 연결되지 않았습니다. 관리자는 오른쪽 위 <strong>관리자로 로그인</strong>을 사용하세요.
-      </p>
+      <!-- 1) 기본: 소셜 로그인 (비밀번호 입력 없음) -->
+      <div id="socialView" class="stack">
+        <p id="oauthSetupHint" class="setup-hint" hidden>
+          Google 로그인이 아직 연동되지 않았습니다. 관리자는 오른쪽 위 <strong>관리자로 로그인</strong>을 사용하세요.
+        </p>
 
-      <!-- 1) 이메일 로그인 (기본) -->
-      <form id="emailLoginForm" class="stack">
-        <input id="loginEmail" type="email" placeholder="이메일" autocomplete="email" required />
-        <input id="loginPassword" type="password" placeholder="비밀번호" autocomplete="current-password" required />
-        <button type="submit" class="primary">로그인</button>
+        <a id="googleLoginBtn" class="oauth-btn google" href="/api/auth/oauth/google">
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.2-2.27H12v4.51h6.47a5.53 5.53 0 0 1-2.4 3.63v3h3.88c2.27-2.09 3.54-5.17 3.54-8.87z"/>
+            <path fill="#34A853" d="M12 24c3.24 0 5.95-1.07 7.94-2.91l-3.88-3c-1.08.72-2.46 1.15-4.06 1.15-3.12 0-5.77-2.11-6.72-4.95H1.28v3.09A12 12 0 0 0 12 24z"/>
+            <path fill="#FBBC05" d="M5.28 14.29A7.18 7.18 0 0 1 4.9 12c0-.79.14-1.56.38-2.29V6.62H1.28A12 12 0 0 0 0 12c0 1.94.46 3.77 1.28 5.38l4-3.09z"/>
+            <path fill="#EA4335" d="M12 4.75c1.76 0 3.34.61 4.58 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0A12 12 0 0 0 1.28 6.62l4 3.09c.95-2.84 3.6-4.96 6.72-4.96z"/>
+          </svg>
+          <span>Google 계정으로 계속하기</span>
+        </a>
+
+        <a id="githubLoginBtn" class="oauth-btn github" href="/api/auth/oauth/github" hidden>
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor" aria-hidden="true">
+            <path d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.55-.29-5.24-1.28-5.24-5.68 0-1.25.45-2.28 1.19-3.08-.12-.29-.52-1.46.11-3.04 0 0 .97-.31 3.18 1.18a11.1 11.1 0 0 1 5.79 0c2.21-1.49 3.18-1.18 3.18-1.18.63 1.58.23 2.75.11 3.04.74.8 1.19 1.83 1.19 3.08 0 4.41-2.69 5.39-5.26 5.67.41.36.78 1.07.78 2.15 0 1.55-.01 2.8-.01 3.18 0 .31.21.68.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/>
+          </svg>
+          <span>GitHub 계정으로 계속하기</span>
+        </a>
+
+        <p class="hint center">별도 비밀번호 생성 없이 인증된 이메일로 안전하게 입장합니다.</p>
+      </div>
+
+      <!-- 1-b) 첫 소셜 로그인 초대 코드 1회 확인 -->
+      <form id="oauthInviteForm" class="stack" hidden>
+        <p id="oauthInviteDesc" class="hint"></p>
+        <input id="oauthInviteCode" type="text" placeholder="초대 코드 입력" autocomplete="off" spellcheck="false" required />
+        <button type="submit" class="primary">가입 완료 및 입장</button>
+        <button type="button" id="cancelOAuthInviteBtn" class="ghost small">← 돌아가기</button>
       </form>
 
-      <!-- 2) 이메일 회원가입 -->
+      <!-- 2) 관리자 발급 10분 임시 특별 코드 -->
+      <form id="passForm" class="stack" hidden>
+        <p class="hint">관리자가 발급한 10분 임시 특별 코드를 입력하면 별도 로그인 없이 바로 입장합니다.</p>
+        <input id="passCode" type="text" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" class="code-input" required />
+        <button type="submit" class="primary">특별 코드로 바로 입장</button>
+      </form>
+
+      <!-- 3) 선택: 이메일 로그인 (메일 발송기가 설정된 경우에만 탭 표시) -->
+      <form id="emailLoginForm" class="stack" hidden>
+        <input id="loginEmail" type="email" placeholder="이메일" autocomplete="email" required />
+        <input id="loginPassword" type="password" placeholder="비밀번호" autocomplete="current-password" required />
+        <button type="submit" class="primary">이메일 로그인</button>
+      </form>
+
+      <!-- 4) 선택: 이메일 회원가입 -->
       <form id="registerForm" class="stack" hidden>
         <input id="regEmail" type="email" placeholder="이메일" autocomplete="email" required />
         <input id="regPassword" type="password" placeholder="비밀번호 (8자 이상)" minlength="8" autocomplete="new-password" required />
@@ -43,7 +81,7 @@
         <button type="submit" class="primary">인증 메일 받기</button>
       </form>
 
-      <!-- 2-b) 이메일 6자리 인증 코드 확인 -->
+      <!-- 4-b) 이메일 6자리 인증 코드 확인 -->
       <form id="verifyForm" class="stack" hidden>
         <p id="verifyDesc" class="hint"></p>
         <input id="verifyCode" type="text" inputmode="numeric" maxlength="6" placeholder="인증 코드 6자리" autocomplete="one-time-code" class="code-input" required />
@@ -54,19 +92,12 @@
         </div>
       </form>
 
-      <!-- 3) 관리자 발급 10분 임시 특별 코드 -->
-      <form id="passForm" class="stack" hidden>
-        <p class="hint">관리자가 발급한 10분 임시 특별 코드를 입력하면 별도 인증 없이 바로 입장합니다.</p>
-        <input id="passCode" type="text" maxlength="9" placeholder="XXXX-XXXX" autocomplete="off" spellcheck="false" class="code-input" required />
-        <button type="submit" class="primary">특별 코드로 바로 입장</button>
-      </form>
-
-      <!-- 4) 관리자 비밀번호 로그인 (오른쪽 위 작은 버튼으로 전환) -->
+      <!-- 5) 관리자 비밀번호 로그인 (오른쪽 위 작은 버튼으로만 진입) -->
       <form id="sharedForm" class="stack" hidden>
-        <p class="hint">관리자 비밀번호로 바로 입장합니다.</p>
+        <p class="hint">관리자 전용 비밀번호로 입장합니다.</p>
         <input id="sharedPassword" type="password" placeholder="관리자 비밀번호" autocomplete="current-password" required />
         <button type="submit" class="primary">관리자 로그인</button>
-        <button type="button" id="backFromAdminBtn" class="ghost small">← 이메일 로그인으로 돌아가기</button>
+        <button type="button" id="backFromAdminBtn" class="ghost small">← 일반 로그인으로 돌아가기</button>
       </form>
 
       <p id="info" class="info" hidden></p>

@@ -4,19 +4,30 @@ const errorEl = $('#error');
 const infoEl = $('#info');
 const tabsEl = $('#tabs');
 const adminBtn = $('#adminLoginBtn');
-const setupHintEl = $('#emailSetupHint');
+const oauthHintEl = $('#oauthSetupHint');
+const googleBtn = $('#googleLoginBtn');
+const githubBtn = $('#githubLoginBtn');
 
-const forms = {
+const views = {
+  social: $('#socialView'),
+  oauthInvite: $('#oauthInviteForm'),
+  pass: $('#passForm'),
   email: $('#emailLoginForm'),
   register: $('#registerForm'),
   verify: $('#verifyForm'),
   shared: $('#sharedForm'),
-  pass: $('#passForm'),
 };
 
-let methods = { emailAuth: false, inviteRequired: false, sharedPassword: true, guestPass: true };
+let methods = {
+  emailAuth: false,
+  googleOAuth: false,
+  githubOAuth: false,
+  inviteRequired: false,
+  sharedPassword: true,
+  guestPass: true,
+};
 let pendingEmail = '';
-let currentView = 'email';
+let currentView = 'social';
 
 function nextUrl() {
   const next = new URLSearchParams(location.search).get('next') || '/';
@@ -40,28 +51,29 @@ function clearMessages() {
   infoEl.hidden = true;
 }
 
-function switchTab(name) {
+function switchView(name) {
   currentView = name;
   clearMessages();
 
   const isAdminView = name === 'shared';
-  tabsEl.hidden = isAdminView;
+  const isSubView = isAdminView || name === 'oauthInvite' || name === 'verify';
+  tabsEl.hidden = isSubView;
+
   $('#loginTitle').textContent = isAdminView ? '🔑 관리자 로그인' : '🔒 P2P 파일 전송';
   $('#loginSub').textContent = isAdminView
     ? '관리자 전용 비밀번호로 입장합니다.'
-    : '이메일 인증 후 로그인해서 사용할 수 있습니다.';
+    : '비밀번호 없이 Google 계정으로 간편하게 로그인하세요.';
+
   if (methods.sharedPassword) {
     adminBtn.textContent = isAdminView ? '← 일반 로그인' : '🔑 관리자로 로그인';
   }
 
-  const showHint = !methods.emailAuth && (name === 'email' || name === 'register');
-  setupHintEl.hidden = !showHint;
-
-  for (const [k, form] of Object.entries(forms)) form.hidden = k !== name;
+  for (const [k, el] of Object.entries(views)) el.hidden = k !== name;
   for (const btn of tabsEl.querySelectorAll('button[data-tab]')) {
     btn.classList.toggle('active', btn.dataset.tab === name);
   }
-  const focusable = forms[name]?.querySelector('input:not([hidden]):not(:disabled)');
+
+  const focusable = views[name]?.querySelector('input:not([hidden]):not(:disabled)');
   focusable?.focus();
 }
 
@@ -71,55 +83,117 @@ async function init() {
     if (res.ok) methods = await res.json();
   } catch { /* 기본값 사용 */ }
 
-  // 이메일 초대 코드 입력칸 & 미설정 시 버튼 비활성화 처리
+  const next = encodeURIComponent(nextUrl());
+
+  // Google / GitHub 버튼 구성
+  googleBtn.href = `/api/auth/oauth/google?next=${next}`;
+  if (!methods.googleOAuth) {
+    googleBtn.classList.add('disabled');
+    googleBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      showError('Google OAuth가 아직 설정되지 않았습니다. 관리자는 오른쪽 위 "관리자로 로그인"을 이용하세요.');
+    });
+  }
+  githubBtn.href = `/api/auth/oauth/github?next=${next}`;
+  githubBtn.hidden = !methods.githubOAuth;
+  oauthHintEl.hidden = methods.googleOAuth || methods.githubOAuth;
+
+  // 탭 노출 설정 (비밀번호/이메일 회원가입은 활성화되었을 때만 보조 탭 표시)
+  const setTab = (tab, visible) => {
+    const b = tabsEl.querySelector(`button[data-tab="${tab}"]`);
+    if (b) b.hidden = !visible;
+  };
+  setTab('pass', methods.guestPass);
+  setTab('email', methods.emailAuth);
+  setTab('register', methods.emailAuth);
+
   const inviteInput = $('#regInvite');
   inviteInput.hidden = !methods.inviteRequired;
   inviteInput.required = !!methods.inviteRequired;
 
-  for (const f of [forms.email, forms.register]) {
-    const submit = f.querySelector('button[type="submit"]');
-    if (submit) submit.disabled = !methods.emailAuth;
-  }
-
-  // 특별 코드 탭 표시 여부
-  const passTabBtn = tabsEl.querySelector('button[data-tab="pass"]');
-  if (passTabBtn) passTabBtn.hidden = !methods.guestPass;
-
-  // 오른쪽 위 '관리자로 로그인' 작은 버튼
+  // 오른쪽 위 작은 '관리자로 로그인' 버튼
   adminBtn.hidden = !methods.sharedPassword;
   adminBtn.addEventListener('click', () => {
-    switchTab(currentView === 'shared' ? 'email' : 'shared');
+    switchView(currentView === 'shared' ? 'social' : 'shared');
   });
-  $('#backFromAdminBtn').addEventListener('click', () => switchTab('email'));
+  $('#backFromAdminBtn').addEventListener('click', () => switchView('social'));
+  $('#cancelOAuthInviteBtn').addEventListener('click', () => switchView('social'));
 
   tabsEl.addEventListener('click', (e) => {
     const tab = e.target.closest('button[data-tab]')?.dataset.tab;
-    if (tab) switchTab(tab);
+    if (tab) switchView(tab);
   });
 
-  // ?pass=XXXX-XXXX 링크로 들어온 경우 URL에서 즉시 제거 후 바로 입장 시도
+  // URL 쿼리 파라미터 처리 (?oauth_error= / ?oauth_invite=1 / ?pass=)
   const params = new URLSearchParams(location.search);
+  const oauthError = params.get('oauth_error');
+  const oauthInvite = params.get('oauth_invite');
+  const oauthEmail = params.get('email');
   const passFromUrl = params.get('pass');
+
+  if (oauthError) {
+    params.delete('oauth_error');
+    cleanQuery(params);
+    switchView('social');
+    showError(oauthError);
+    return;
+  }
+
+  if (oauthInvite === '1') {
+    params.delete('oauth_invite');
+    params.delete('email');
+    cleanQuery(params);
+    $('#oauthInviteDesc').textContent = oauthEmail
+      ? `${oauthEmail} 계정으로 처음 로그인합니다. 초대 코드를 1회만 입력하면 다음부터 바로 입장할 수 있습니다.`
+      : '처음 로그인하는 소셜 계정입니다. 초대 코드를 1회 입력해 주세요.';
+    switchView('oauthInvite');
+    return;
+  }
+
   if (passFromUrl && methods.guestPass) {
     params.delete('pass');
-    const clean = params.toString();
-    history.replaceState(null, '', clean ? `${location.pathname}?${clean}` : location.pathname);
-    switchTab('pass');
+    cleanQuery(params);
+    switchView('pass');
     $('#passCode').value = passFromUrl.toUpperCase();
     await submitPass(passFromUrl);
     return;
   }
 
-  // 기본 화면은 항상 이메일 로그인
-  switchTab('email');
+  switchView('social');
 }
 
-// ---------------------------------------------------------------- 이메일 로그인
-forms.email.addEventListener('submit', async (e) => {
+function cleanQuery(params) {
+  const qs = params.toString();
+  history.replaceState(null, '', qs ? `${location.pathname}?${qs}` : location.pathname);
+}
+
+// ---------------------------------------------------------------- 첫 소셜 로그인 초대코드 완료
+views.oauthInvite.addEventListener('submit', async (e) => {
   e.preventDefault();
-  if (!methods.emailAuth) return;
   clearMessages();
-  const btn = forms.email.querySelector('button[type="submit"]');
+  const btn = views.oauthInvite.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/auth/oauth/complete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inviteCode: $('#oauthInviteCode').value.trim() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) { location.replace(data.next || nextUrl()); return; }
+    showError(data.error || '초대 코드 확인에 실패했습니다.');
+  } catch {
+    showError('서버에 연결할 수 없습니다.');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------- 이메일 로그인 (선택 활성화 시)
+views.email.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessages();
+  const btn = views.email.querySelector('button[type="submit"]');
   btn.disabled = true;
   const email = $('#loginEmail').value.trim();
   try {
@@ -142,12 +216,11 @@ forms.email.addEventListener('submit', async (e) => {
   }
 });
 
-// ---------------------------------------------------------------- 회원가입
-forms.register.addEventListener('submit', async (e) => {
+// ---------------------------------------------------------------- 이메일 회원가입 (선택 활성화 시)
+views.register.addEventListener('submit', async (e) => {
   e.preventDefault();
-  if (!methods.emailAuth) return;
   clearMessages();
-  const btn = forms.register.querySelector('button[type="submit"]');
+  const btn = views.register.querySelector('button[type="submit"]');
   btn.disabled = true;
   const email = $('#regEmail').value.trim();
   try {
@@ -177,14 +250,13 @@ function openVerify(email, desc) {
   pendingEmail = email;
   $('#verifyDesc').textContent = desc;
   $('#verifyCode').value = '';
-  switchTab('verify');
+  switchView('verify');
 }
 
-// ---------------------------------------------------------------- 이메일 인증 확인
-forms.verify.addEventListener('submit', async (e) => {
+views.verify.addEventListener('submit', async (e) => {
   e.preventDefault();
   clearMessages();
-  const btn = forms.verify.querySelector('button[type="submit"]');
+  const btn = views.verify.querySelector('button[type="submit"]');
   btn.disabled = true;
   try {
     const res = await fetch('/api/auth/verify', {
@@ -222,13 +294,13 @@ $('#resendBtn').addEventListener('click', async () => {
   }
 });
 
-$('#backToLoginBtn').addEventListener('click', () => switchTab('email'));
+$('#backToLoginBtn').addEventListener('click', () => switchView('email'));
 
 // ---------------------------------------------------------------- 관리자 비밀번호 로그인
-forms.shared.addEventListener('submit', async (e) => {
+views.shared.addEventListener('submit', async (e) => {
   e.preventDefault();
   clearMessages();
-  const btn = forms.shared.querySelector('button[type="submit"]');
+  const btn = views.shared.querySelector('button[type="submit"]');
   const input = $('#sharedPassword');
   btn.disabled = true;
   try {
@@ -252,7 +324,7 @@ forms.shared.addEventListener('submit', async (e) => {
 // ---------------------------------------------------------------- 특별 코드 (10분 임시 패스)
 async function submitPass(code) {
   clearMessages();
-  const btn = forms.pass.querySelector('button[type="submit"]');
+  const btn = views.pass.querySelector('button[type="submit"]');
   btn.disabled = true;
   try {
     const res = await fetch('/api/auth/pass', {
@@ -271,7 +343,7 @@ async function submitPass(code) {
   }
 }
 
-forms.pass.addEventListener('submit', (e) => {
+views.pass.addEventListener('submit', (e) => {
   e.preventDefault();
   submitPass($('#passCode').value);
 });

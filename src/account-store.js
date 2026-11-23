@@ -307,6 +307,9 @@ export class AccountStore extends DurableObject {
     if (!rows.length) return { ok: false, error: 'invalid_credentials' };
 
     const { password_hash, salt, verified } = rows[0];
+    if (password_hash === 'oauth-only' || !salt) {
+      return { ok: false, error: 'oauth_only' };
+    }
     const derived = await hashPassword(password, fromHex(salt));
     if (!constantTimeEqual(derived, fromHex(password_hash))) {
       return { ok: false, error: 'invalid_credentials' };
@@ -314,6 +317,26 @@ export class AccountStore extends DurableObject {
 
     if (verified !== 1) return { ok: false, error: 'not_verified' };
     return { ok: true };
+  }
+
+  async isVerifiedUser(email) {
+    const rows = this.ctx.storage.sql
+      .exec('SELECT verified FROM users WHERE email = ?', email)
+      .toArray();
+    return rows.length > 0 && rows[0].verified === 1;
+  }
+
+  async upsertOAuthUser(email) {
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO users (email, password_hash, salt, verified, created_at)
+       VALUES (?, 'oauth-only', '', 1, ?)
+       ON CONFLICT(email) DO UPDATE SET verified = 1`,
+      email,
+      now
+    );
+    this.ctx.storage.sql.exec('DELETE FROM verification_codes WHERE email = ?', email);
+    return true;
   }
 
   // ---------------------------------------------------------------- 관리자 임시 특별 코드 (10분 후 자동 파기)
