@@ -3,6 +3,8 @@
   "name": "p2p-file-transfer",
   "main": "src/worker.js",
   "compatibility_date": "2026-01-01",
+  "workers_dev": true,
+  "preview_urls": false,
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -14,6 +16,10 @@
       {
         "name": "ROOMS",
         "class_name": "SignalingRoom"
+      },
+      {
+        "name": "ACCOUNTS",
+        "class_name": "AccountStore"
       }
     ]
   },
@@ -21,6 +27,10 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["SignalingRoom"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["AccountStore"]
     }
   ],
   "vars": {

@@ -1,12 +1,9 @@
 // 방별 시그널링 Durable Object (WebSocket Hibernation API 사용)
-// - 각 방 코드(6자리)마다 독립 인스턴스로 동작하며, 유휴 시 자동 절전(hibernation)되어 무료 한도를 거의 쓰지 않음
-// - 로그인 실패 횟수 제한(IP별)도 같은 SQLite 스토리지 기반으로 안전하게 유지
+// - 각 방 코드(6자리)마다 독립 인스턴스로 동작하며, 유휴 시 자동 절전(hibernation)
 import { DurableObject } from 'cloudflare:workers';
 
 const ROOM_TTL_MS = 60 * 60_000;      // 빈 방 유지 시간 (1시간)
 const MAX_MESSAGE_BYTES = 64 * 1024;  // 시그널 메시지 최대 크기
-const LOGIN_MAX_FAILS = 5;
-const LOGIN_WINDOW_MS = 15 * 60_000;
 
 export class SignalingRoom extends DurableObject {
   constructor(ctx, env) {
@@ -15,12 +12,11 @@ export class SignalingRoom extends DurableObject {
     this.ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
-  // ---------------------------------------------------------------- 방 관리 RPC
   async createRoom() {
     const sockets = this.ctx.getWebSockets();
     const createdAt = await this.ctx.storage.get('createdAt');
     if (sockets.length > 0 || (createdAt && Date.now() - createdAt < ROOM_TTL_MS)) {
-      return false; // 이미 사용 중인 코드
+      return false;
     }
     await this.ctx.storage.put('createdAt', Date.now());
     await this.ctx.storage.setAlarm(Date.now() + ROOM_TTL_MS);
@@ -34,31 +30,6 @@ export class SignalingRoom extends DurableObject {
     return { exists, peers: sockets.length };
   }
 
-  // ---------------------------------------------------------------- 로그인 속도 제한 RPC
-  async checkLoginAllowed() {
-    const rec = await this.ctx.storage.get('rl');
-    if (!rec) return true;
-    if (Date.now() - rec.first >= LOGIN_WINDOW_MS) {
-      await this.ctx.storage.delete('rl');
-      return true;
-    }
-    return rec.count < LOGIN_MAX_FAILS;
-  }
-
-  async recordLoginFailure() {
-    let rec = await this.ctx.storage.get('rl');
-    const now = Date.now();
-    if (!rec || now - rec.first >= LOGIN_WINDOW_MS) rec = { count: 0, first: now };
-    rec.count += 1;
-    await this.ctx.storage.put('rl', rec);
-    await this.ctx.storage.setAlarm(rec.first + LOGIN_WINDOW_MS);
-  }
-
-  async clearLoginFailure() {
-    await this.ctx.storage.delete('rl');
-  }
-
-  // ---------------------------------------------------------------- WebSocket 업그레이드
   async fetch(request) {
     if (request.headers.get('upgrade')?.toLowerCase() !== 'websocket') {
       return new Response('Expected WebSocket', { status: 426 });
@@ -99,7 +70,6 @@ export class SignalingRoom extends DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  // ---------------------------------------------------------------- Hibernation 이벤트
   async webSocketMessage(ws, raw) {
     if (typeof raw !== 'string') return;
     if (raw.length > MAX_MESSAGE_BYTES) {
@@ -107,7 +77,6 @@ export class SignalingRoom extends DurableObject {
       return;
     }
 
-    // 토큰 버킷 속도 제한 (초당 20개, 최대 100개 버스트)
     const state = ws.deserializeAttachment() || { tokens: 100, lastRefill: Date.now() };
     const now = Date.now();
     state.tokens = Math.min(100, state.tokens + ((now - state.lastRefill) / 1000) * 20);
@@ -148,10 +117,6 @@ export class SignalingRoom extends DurableObject {
   async alarm() {
     if (this.ctx.getWebSockets().length === 0) {
       await this.ctx.storage.delete('createdAt');
-    }
-    const rec = await this.ctx.storage.get('rl');
-    if (rec && Date.now() - rec.first >= LOGIN_WINDOW_MS) {
-      await this.ctx.storage.delete('rl');
     }
   }
 

@@ -1,11 +1,9 @@
 // P2P 파일 전송 클라이언트 (Cloudflare Workers + Durable Objects 시그널링)
-//  1) 세션 확인(Cloudflare Access / 비밀번호 로그인)
-//  2) POST /api/rooms 로 방 생성 또는 GET /api/rooms/:code 확인 후 /ws?room=CODE 연결
-//  3) 상대가 들어오면 RTCPeerConnection + DataChannel 생성
-//  4) 보안 확인 코드(SAS): 양쪽 DTLS 인증서 지문으로 6자리 숫자를 만들어 표시
-//  5) DataChannel 전송 프로토콜 (한 번에 한 파일):
-//     송신 offer-file → 수신자 accept / decline
-//     → 바이너리 청크(64KB)… → end → 수신자 저장 후 ack (실패 시 fail, 송신 취소 시 cancel)
+//  1) 세션 확인(이메일 계정 / 공유 비밀번호 / 10분 임시 특별 코드 / Cloudflare Access)
+//  2) 관리자일 경우 10분 임시 특별 코드 발급·조회·파기 패널 제공
+//  3) POST /api/rooms 로 방 생성 또는 GET /api/rooms/:code 확인 후 /ws?room=CODE 연결
+//  4) 상대가 들어오면 RTCPeerConnection + DataChannel 생성 + 6자리 보안 확인 코드(SAS) 표시
+//  5) DataChannel 전송: offer-file → accept/decline → 64KB 청크… → end → ack
 
 const $ = (s) => document.querySelector(s);
 
@@ -21,16 +19,21 @@ let reconnectTimer = null;
 let pc = null;
 let channel = null;
 let roomCode = null;
-let authMode = 'password';
+let authMode = 'cookie';
+let isAdmin = false;
 let iceServers = [];
-let signalChain = Promise.resolve();   // 시그널 메시지를 순서대로 처리
+let signalChain = Promise.resolve();
 
-const sendQueue = [];                  // 보낼 파일 대기열
+let issuedPassExpiresAt = 0;
+let passCountdownTimer = null;
+let activePasses = [];
+
+const sendQueue = [];
 let sending = false;
-const waiters = new Map();             // 송신: 파일 id -> 상대 응답 대기
-const replies = new Map();             // 송신: 기다리기 전에 먼저 도착한 응답
-let pendingOffer = null;               // 수신: 수락 여부를 묻는 중인 파일
-let incoming = null;                   // 수신: 받는 중인 파일
+const waiters = new Map();
+const replies = new Map();
+let pendingOffer = null;
+let incoming = null;
 
 // ================================================================ 초기화
 init();
@@ -58,11 +61,17 @@ async function checkSession() {
     }
     if (res.ok) {
       const data = await res.json();
-      authMode = data.mode || 'password';
+      authMode = data.mode || 'cookie';
+      isAdmin = !!data.isAdmin;
+      const badge = $('#userBadge');
       if (data.email) {
-        $('#userEmail').textContent = data.email;
-        $('#userEmail').hidden = false;
+        badge.textContent = data.email;
+        badge.hidden = false;
+      } else if (data.isGuest) {
+        badge.textContent = '임시 게스트';
+        badge.hidden = false;
       }
+      $('#adminPassToggle').hidden = !isAdmin;
     }
   } catch { /* 네트워크 일시 중단 */ }
   return true;
@@ -83,9 +92,9 @@ function bindUI() {
   });
 
   $('#leaveBtn').addEventListener('click', leaveRoom);
-  $('#copyBtn').addEventListener('click', copyLink);
+  $('#copyBtn').addEventListener('click', () => copyText($('#shareLink').value, $('#copyBtn'), '링크 복사'));
   $('#logoutBtn').addEventListener('click', async () => {
-    if (authMode === 'password' || authMode === 'both') {
+    if (authMode !== 'access') {
       try { await fetch('/api/logout', { method: 'POST' }); } catch { /* 무시 */ }
     }
     if (authMode === 'access' || authMode === 'both') {
@@ -94,6 +103,21 @@ function bindUI() {
       location.href = '/login.html';
     }
   });
+
+  // 관리자 임시 특별 코드 UI
+  $('#adminPassToggle').addEventListener('click', () => {
+    const panel = $('#adminPanel');
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) refreshPasses();
+  });
+  $('#closeAdminBtn').addEventListener('click', () => { $('#adminPanel').hidden = true; });
+  $('#issuePassBtn').addEventListener('click', issueGuestPass);
+  $('#copyPassCodeBtn').addEventListener('click', () =>
+    copyText($('#issuedCode').textContent, $('#copyPassCodeBtn'), '코드 복사')
+  );
+  $('#copyPassLinkBtn').addEventListener('click', () =>
+    copyText($('#issuedLink').value, $('#copyPassLinkBtn'), '링크 복사')
+  );
 
   const drop = $('#dropZone');
   const input = $('#fileInput');
@@ -115,6 +139,109 @@ function bindUI() {
       e.returnValue = '';
     }
   });
+}
+
+// ================================================================ 관리자 임시 특별 코드 (10분 만료)
+async function issueGuestPass() {
+  const errEl = $('#adminError');
+  errEl.hidden = true;
+  const btn = $('#issuePassBtn');
+  btn.disabled = true;
+  try {
+    const singleUse = $('#passSingleUse').checked;
+    const res = await fetch('/api/admin/passes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ singleUse }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      errEl.textContent = data.error || '코드 발급에 실패했습니다.';
+      errEl.hidden = false;
+      return;
+    }
+    issuedPassExpiresAt = data.expiresAt;
+    $('#issuedCode').textContent = data.code;
+    $('#issuedLink').value = `${location.origin}/login.html?pass=${encodeURIComponent(data.code)}`;
+    $('#issuedPassBox').hidden = false;
+    startPassTicker();
+    await refreshPasses();
+  } catch {
+    errEl.textContent = '서버에 연결할 수 없습니다.';
+    errEl.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function refreshPasses() {
+  if (!isAdmin) return;
+  try {
+    const res = await fetch('/api/admin/passes', { cache: 'no-store' });
+    if (!res.ok) return;
+    const data = await res.json();
+    activePasses = Array.isArray(data.passes) ? data.passes : [];
+    renderPassList();
+    if (activePasses.length || issuedPassExpiresAt > Date.now()) startPassTicker();
+  } catch { /* 무시 */ }
+}
+
+async function revokePass(id) {
+  try {
+    await fetch(`/api/admin/passes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+    await refreshPasses();
+  } catch { /* 무시 */ }
+}
+
+function formatCountdown(ms) {
+  const sec = Math.max(0, Math.ceil(ms / 1000));
+  const m = String(Math.floor(sec / 60)).padStart(2, '0');
+  const s = String(sec % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
+function renderPassList() {
+  const ul = $('#passList');
+  const now = Date.now();
+  const valid = activePasses.filter((p) => p.expiresAt > now);
+  ul.replaceChildren();
+  for (const p of valid) {
+    const li = document.createElement('li');
+    li.className = 'pass-item';
+    const info = document.createElement('span');
+    const mode = p.singleUse ? '1회용' : `사용 ${p.uses}회`;
+    info.textContent = `${p.hint} · ${mode} · ${formatCountdown(p.expiresAt - now)} 남음`;
+    const del = makeButton('즉시 파기', 'small ghost');
+    del.addEventListener('click', () => revokePass(p.id));
+    li.append(info, del);
+    ul.append(li);
+  }
+}
+
+function startPassTicker() {
+  if (passCountdownTimer) return;
+  const tick = () => {
+    const now = Date.now();
+    if (issuedPassExpiresAt) {
+      const rem = issuedPassExpiresAt - now;
+      const timerEl = $('#issuedTimer');
+      if (rem > 0) {
+        timerEl.textContent = `${formatCountdown(rem)} 남음`;
+        timerEl.className = 'badge ok';
+      } else {
+        timerEl.textContent = '만료 파기됨';
+        timerEl.className = 'badge err';
+        issuedPassExpiresAt = 0;
+      }
+    }
+    renderPassList();
+    if (!issuedPassExpiresAt && !activePasses.some((p) => p.expiresAt > now)) {
+      clearInterval(passCountdownTimer);
+      passCountdownTimer = null;
+    }
+  };
+  tick();
+  passCountdownTimer = setInterval(tick, 1000);
 }
 
 // ================================================================ 방 생성 / 참여 / 시그널링
@@ -164,7 +291,6 @@ function connectRoomSocket(code, rejoin) {
   ws = sock;
 
   sock.onopen = () => {
-    // 25초마다 ping (서버 Hibernation AutoResponse가 DO 깨우지 않고 자동 pong 응답)
     pingTimer = setInterval(() => {
       if (sock.readyState === WebSocket.OPEN) sock.send('ping');
     }, 25_000);
@@ -183,7 +309,6 @@ function connectRoomSocket(code, rejoin) {
     pingTimer = null;
     ws = null;
 
-    // 방이 없거나 정원 초과면 재연결하지 않고 홈으로 복귀
     if (e.code === 4404 || e.code === 4409) {
       leaveRoom(false);
       return;
@@ -224,7 +349,6 @@ function handleServerMessage(msg) {
       break;
 
     case 'peer-joined':
-      // 상대가 시그널링만 재연결한 경우, 살아있는 P2P 연결은 유지
       if (msg.rejoin && isConnected()) return;
       setStatus('상대방과 연결하는 중…', 'waiting');
       startPeer(true).catch(onPeerError);
@@ -353,7 +477,6 @@ function onPeerError(err) {
   setStatus(`연결 오류: ${err.message || err}`, 'error');
 }
 
-// 보안 확인 코드 + 연결 경로 표시
 async function showPeerInfo(myPc) {
   $('#peerInfo').hidden = false;
   $('#sas').textContent = await safetyCode(myPc);
@@ -366,7 +489,6 @@ async function safetyCode(myPc) {
   const mine = fingerprint(myPc.localDescription?.sdp);
   const theirs = fingerprint(myPc.remoteDescription?.sdp);
   if (!mine || !theirs) return '확인 불가';
-  // 정렬해서 합치면 양쪽에서 같은 값이 나옴. 중간자가 있으면 양쪽 지문 쌍이 달라져 코드가 다름.
   const data = new TextEncoder().encode([mine, theirs].sort().join('|'));
   const h = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
   const num = (((h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3]) >>> 0) % 1_000_000;
@@ -381,7 +503,7 @@ async function routeType(myPc) {
     stats.forEach((r) => {
       if (r.type === 'transport' && r.selectedCandidatePairId) pair = stats.get(r.selectedCandidatePairId);
     });
-    if (!pair) stats.forEach((r) => { if (r.type === 'candidate-pair' && r.selected) pair = r; }); // Firefox
+    if (!pair) stats.forEach((r) => { if (r.type === 'candidate-pair' && r.selected) pair = r; });
     if (!pair) return '알 수 없음';
     const local = stats.get(pair.localCandidateId);
     const remote = stats.get(pair.remoteCandidateId);
@@ -453,7 +575,7 @@ async function sendFile(job) {
   try {
     while (offset < file.size) {
       if (job.cancelled) return;
-      if (replies.has(id)) break; // 수신 측이 중간에 실패를 알려옴
+      if (replies.has(id)) break;
       if (ch.readyState !== 'open') throw new Error('연결이 끊어졌습니다.');
       if (ch.bufferedAmount > HIGH_WATER) await waitForDrain(ch);
 
@@ -461,7 +583,7 @@ async function sendFile(job) {
       if (job.cancelled) return;
       ch.send(buf);
       offset += buf.byteLength;
-      ui.progress(Math.max(0, offset - ch.bufferedAmount)); // 실제로 나간 양 기준
+      ui.progress(Math.max(0, offset - ch.bufferedAmount));
     }
   } catch (err) {
     if (ch.readyState === 'open') ch.send(JSON.stringify({ type: 'cancel', id }));
@@ -573,12 +695,11 @@ function onFileOffer(msg) {
 async function acceptOffer(offer) {
   let writable = null;
   if (canStreamToDisk) {
-    // 대용량 대응: 받은 청크를 메모리에 쌓지 않고 디스크에 바로 기록
     try {
       const handle = await window.showSaveFilePicker({ suggestedName: offer.name });
       writable = await handle.createWritable();
     } catch (err) {
-      if (err.name === 'AbortError') return false; // 저장 위치 선택 취소 → 다시 묻기
+      if (err.name === 'AbortError') return false;
       console.warn('디스크 직접 저장 불가, 메모리 방식으로 받습니다.', err);
     }
   }
@@ -649,7 +770,6 @@ async function finishIncoming() {
       await f.writable.close();
       f.ui.complete('저장 완료 ✓');
     } else {
-      // MIME 타입은 항상 octet-stream: 받은 파일이 우리 사이트 권한으로 실행되는 것을 방지
       const blob = new Blob(f.chunks, { type: 'application/octet-stream' });
       f.chunks = null;
       f.ui.complete('수신 완료 ✓', { url: URL.createObjectURL(blob), name: f.name });
@@ -698,17 +818,19 @@ function leaveRoom(notify = true) {
   setStatus('연결 준비 중…', 'waiting');
 }
 
-async function copyLink() {
-  const input = $('#shareLink');
+async function copyText(text, btn, defaultLabel) {
   try {
-    await navigator.clipboard.writeText(input.value);
+    await navigator.clipboard.writeText(text);
   } catch {
-    input.select();
+    const tmp = document.createElement('textarea');
+    tmp.value = text;
+    document.body.append(tmp);
+    tmp.select();
     document.execCommand('copy');
+    tmp.remove();
   }
-  const btn = $('#copyBtn');
   btn.textContent = '복사됨!';
-  setTimeout(() => { btn.textContent = '링크 복사'; }, 1500);
+  setTimeout(() => { btn.textContent = defaultLabel; }, 1500);
 }
 
 function setStatus(text, kind) {
@@ -742,7 +864,6 @@ function addTransferUI({ name, size, direction }) {
     <div class="row"><span class="dir"></span><span class="name"></span><span class="size"></span></div>
     <div class="bar"><div class="fill"></div></div>
     <div class="row meta"><span class="note"></span><span class="action"></span></div>`;
-  // 상대가 보낸 파일명은 textContent로만 넣음 (XSS 방지)
   li.querySelector('.dir').textContent = direction === 'send' ? '↑' : '↓';
   li.querySelector('.name').textContent = name;
   li.querySelector('.name').title = name;
@@ -763,7 +884,7 @@ function addTransferUI({ name, size, direction }) {
     },
     progress(bytes, force = false) {
       const now = performance.now();
-      if (!force && now - lastRender < 100 && bytes < size) return; // 100ms 단위로만 갱신
+      if (!force && now - lastRender < 100 && bytes < size) return;
       lastRender = now;
       const pct = size ? Math.min(100, (bytes / size) * 100) : 100;
       fill.style.width = `${pct}%`;

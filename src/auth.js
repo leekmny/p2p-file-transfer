@@ -1,9 +1,11 @@
 // 인증 유틸리티 (외부 라이브러리 없이 Web Crypto API만 사용)
-// - 비밀번호 로그인: SHA-256 상수 시간 비교 + HMAC-SHA256 서명 세션 쿠키
+// - 공유 비밀번호(APP_PASSWORD), 이메일 계정(AccountStore), 10분 임시 특별 코드(guest) → HMAC-SHA256 세션 쿠키
 // - Cloudflare Access: Cf-Access-Jwt-Assertion (RS256) JWKS 서명 검증
+import { hasEmailProvider } from './email.js';
 
 const COOKIE_NAME = 'p2pft_sid';
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 // ================================================================ 공통 헬퍼
 function constantTimeEqual(a, b) {
@@ -44,9 +46,8 @@ export async function sha256Hex(text) {
   return Array.from(digest, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-// ================================================================ 비밀번호 / HMAC 세션 쿠키
-export async function verifyPassword(input, expected) {
-  if (typeof input !== 'string' || typeof expected !== 'string' || expected.length < 8) return false;
+export async function constantTimeSecretMatch(input, expected) {
+  if (typeof input !== 'string' || typeof expected !== 'string' || !expected.length) return false;
   const [a, b] = await Promise.all([
     crypto.subtle.digest('SHA-256', encoder.encode(input)),
     crypto.subtle.digest('SHA-256', encoder.encode(expected)),
@@ -54,23 +55,34 @@ export async function verifyPassword(input, expected) {
   return constantTimeEqual(new Uint8Array(a), new Uint8Array(b));
 }
 
+// ================================================================ 비밀번호 / HMAC 세션 쿠키
+export async function verifyPassword(input, expected) {
+  if (typeof expected !== 'string' || expected.length < 8) return false;
+  return constantTimeSecretMatch(input, expected);
+}
+
+function sessionSecretSource(env) {
+  return env.SESSION_SECRET || env.APP_PASSWORD || env.INVITE_CODE || '';
+}
+
 async function sessionKey(env) {
-  const material = await crypto.subtle.digest(
-    'SHA-256',
-    encoder.encode(`p2pft-session-v1:${env.SESSION_SECRET || env.APP_PASSWORD}`)
-  );
+  const secret = sessionSecretSource(env);
+  if (secret.length < 8) throw new Error('SESSION_SECRET (or APP_PASSWORD / INVITE_CODE) must be at least 8 chars');
+  const material = await crypto.subtle.digest('SHA-256', encoder.encode(`p2pft-session-v3:${secret}`));
   return crypto.subtle.importKey('raw', material, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
 
-export async function issueSessionCookie(request, env) {
-  const ttlHours = Math.max(1, Number(env.SESSION_TTL_HOURS) || 12);
-  const ttlSec = Math.floor(ttlHours * 3600);
-  const exp = Date.now() + ttlSec * 1000;
+// role: 'admin' | 'user' | 'guest'
+export async function issueSessionCookie(request, env, { email = '', role = 'user', ttlSec } = {}) {
+  const defaultSec = Math.floor(Math.max(1, Number(env.SESSION_TTL_HOURS) || 12) * 3600);
+  const maxAge = Math.max(60, Number(ttlSec) || defaultSec);
+  const exp = Date.now() + maxAge * 1000;
+  const sub = toBase64Url(encoder.encode(email || ''));
   const nonce = toBase64Url(crypto.getRandomValues(new Uint8Array(16)));
-  const payload = `${exp}.${nonce}`;
+  const payload = `${exp}.${role}.${sub}.${nonce}`;
   const sig = new Uint8Array(await crypto.subtle.sign('HMAC', await sessionKey(env), encoder.encode(payload)));
   const token = `${payload}.${toBase64Url(sig)}`;
-  return buildCookie(request, token, ttlSec);
+  return buildCookie(request, token, maxAge);
 }
 
 export function clearSessionCookie(request) {
@@ -83,23 +95,33 @@ function buildCookie(request, value, maxAgeSec) {
 }
 
 export async function verifySessionCookie(request, env) {
+  if (sessionSecretSource(env).length < 8) return null;
   const token = parseCookies(request.headers.get('cookie') || '')[COOKIE_NAME];
-  if (!token) return false;
+  if (!token) return null;
   const parts = token.split('.');
-  if (parts.length !== 3) return false;
-  const [expStr, nonce, sigStr] = parts;
+  if (parts.length !== 5) return null;
+  const [expStr, role, subStr, nonce, sigStr] = parts;
   const exp = Number(expStr);
-  if (!Number.isSafeInteger(exp) || exp < Date.now() || !nonce) return false;
+  if (!Number.isSafeInteger(exp) || exp < Date.now() || !nonce) return null;
+  if (!['admin', 'user', 'guest'].includes(role)) return null;
 
   let sigBytes;
-  try { sigBytes = fromBase64Url(sigStr); } catch { return false; }
+  let email = '';
+  try {
+    sigBytes = fromBase64Url(sigStr);
+    email = subStr ? decoder.decode(fromBase64Url(subStr)) : '';
+  } catch {
+    return null;
+  }
 
-  const payload = `${expStr}.${nonce}`;
-  return crypto.subtle.verify('HMAC', await sessionKey(env), sigBytes, encoder.encode(payload));
+  const payload = `${expStr}.${role}.${subStr}.${nonce}`;
+  const valid = await crypto.subtle.verify('HMAC', await sessionKey(env), sigBytes, encoder.encode(payload));
+  if (!valid) return null;
+  return { email: email || null, role };
 }
 
 // ================================================================ Cloudflare Access JWT 검증
-const jwksCache = new Map(); // domain -> { keys, fetchedAt }
+const jwksCache = new Map();
 const JWKS_TTL_MS = 10 * 60_000;
 
 async function fetchJwks(teamDomain, force = false) {
@@ -131,8 +153,8 @@ export async function verifyAccessJwt(request, env) {
 
   let header, payload, sigBytes;
   try {
-    header = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[0])));
-    payload = JSON.parse(new TextDecoder().decode(fromBase64Url(parts[1])));
+    header = JSON.parse(decoder.decode(fromBase64Url(parts[0])));
+    payload = JSON.parse(decoder.decode(fromBase64Url(parts[1])));
     sigBytes = fromBase64Url(parts[2]);
   } catch {
     return null;
@@ -148,12 +170,11 @@ export async function verifyAccessJwt(request, env) {
   const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   if (!auds.includes(aud)) return null;
 
-  let keys;
   try {
-    keys = await fetchJwks(rawDomain);
+    let keys = await fetchJwks(rawDomain);
     let jwk = keys.find((k) => k.kid === header.kid);
     if (!jwk) {
-      keys = await fetchJwks(rawDomain, true); // 키 로테이션 대비 1회 재조회
+      keys = await fetchJwks(rawDomain, true);
       jwk = keys.find((k) => k.kid === header.kid);
     }
     if (!jwk) return null;
@@ -179,31 +200,81 @@ export async function verifyAccessJwt(request, env) {
 }
 
 // ================================================================ 통합 인증 판정
+function parseEmailList(raw) {
+  return (raw || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function allowedEmailsList(env) {
+  return parseEmailList(env.ALLOWED_EMAILS);
+}
+
+export function adminEmailsList(env) {
+  return parseEmailList(env.ADMIN_EMAILS);
+}
+
+export function isAdminEmail(email, env) {
+  if (!email) return false;
+  return adminEmailsList(env).includes(email.trim().toLowerCase());
+}
+
 export function authConfig(env) {
   const access = !!(env.ACCESS_TEAM_DOMAIN?.trim() && env.ACCESS_AUD?.trim());
-  const password = !!(env.APP_PASSWORD && env.APP_PASSWORD.length >= 8);
-  return { access, password };
+  const sharedPassword = !!(env.APP_PASSWORD && env.APP_PASSWORD.length >= 8);
+  const inviteRequired = !!(env.INVITE_CODE && env.INVITE_CODE.length >= 4);
+  const hasAllowedEmails = allowedEmailsList(env).length > 0;
+  const openSignup = env.ALLOW_OPEN_SIGNUP === '1';
+  const hasSessionSecret = sessionSecretSource(env).length >= 8;
+
+  // 이메일 회원가입은 메일 발송기 + (초대코드 or 허용 이메일 or 명시적 오픈) + 세션키가 있을 때 활성화
+  const emailAuth = hasEmailProvider(env) && (inviteRequired || hasAllowedEmails || openSignup) && hasSessionSecret;
+
+  // 임시 특별 코드: 세션 서명 키가 있으면 사용 가능 (관리자가 발급 → 게스트는 모든 인증 없이 입장)
+  const guestPass = hasSessionSecret && (sharedPassword || emailAuth || access);
+
+  return {
+    access,
+    sharedPassword,
+    emailAuth,
+    inviteRequired,
+    guestPass,
+    cookieAuth: sharedPassword || emailAuth,
+  };
 }
 
 export async function authenticate(request, env) {
-  const { access, password } = authConfig(env);
-  if (!access && !password) return { ok: false, misconfigured: true };
+  const cfg = authConfig(env);
+  if (!cfg.access && !cfg.cookieAuth) return { ok: false, misconfigured: true };
+
+  // 1) 임시 특별 코드로 발급된 게스트 세션은 모든 인증을 건너뛰고 통과
+  const cookieSession = await verifySessionCookie(request, env);
+  if (cookieSession?.role === 'guest') {
+    return { ok: true, mode: 'guest', email: null, isAdmin: false, isGuest: true };
+  }
 
   let email = null;
-  if (access) {
+  let isAdmin = false;
+
+  if (cfg.access) {
     const identity = await verifyAccessJwt(request, env);
     if (!identity) return { ok: false, needAccess: true };
     email = identity.email;
+    if (isAdminEmail(email, env) || !adminEmailsList(env).length) isAdmin = true;
   }
 
-  if (password) {
-    const valid = await verifySessionCookie(request, env);
-    if (!valid) return { ok: false, needPassword: true, email };
+  if (cfg.cookieAuth) {
+    if (!cookieSession) return { ok: false, needLogin: true, email };
+    if (cookieSession.email) email = cookieSession.email;
+    if (cookieSession.role === 'admin' || isAdminEmail(email, env)) isAdmin = true;
   }
 
   return {
     ok: true,
-    mode: access && password ? 'both' : access ? 'access' : 'password',
+    mode: cfg.access && cfg.cookieAuth ? 'both' : cfg.access ? 'access' : 'cookie',
     email,
+    isAdmin,
+    isGuest: false,
   };
 }

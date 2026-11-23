@@ -1,31 +1,56 @@
 # 로컬 개발용 환경 변수 파일입니다.
 # 이 파일을 .dev.vars 로 복사한 뒤 값을 채우세요. (Copy-Item .dev.vars.example .dev.vars)
-# 배포 환경에서는 `npx wrangler secret put <변수명>` 으로 등록합니다.
+# 실제 배포 시에는 `npx wrangler secret put <변수명>` 으로 등록합니다.
 
-# --- 인증 방식 (둘 중 하나 이상 필수, 둘 다 비우면 안전을 위해 503 차단) ---
-
-# [방식 A] 비밀번호 로그인 (로컬 개발 또는 Cloudflare Access 없이 쓸 때)
-# 8자 이상의 추측하기 어려운 비밀번호를 입력하세요.
+# ================================================================
+# 1) 공유 비밀번호 로그인 (관리자 빠른 접속 / 초기 설정)
+# ================================================================
 APP_PASSWORD=
 
-# [방식 B] Cloudflare Access (추천: 내 이메일·친구 이메일만 허용)
-# Cloudflare Zero Trust 대시보드에서 Access를 켠 뒤 아래 두 값을 설정하면
-# Worker가 Cf-Access-Jwt-Assertion 서명을 직접 검증하고 별도 비밀번호 없이 입장합니다.
-# (APP_PASSWORD도 함께 설정하면 이메일 인증 + 비밀번호 2중 잠금이 됩니다.)
+# ================================================================
+# 2) 이메일 회원가입 + 6자리 이메일 인증
+#    아래 3가지가 갖춰지면 회원가입/인증 화면이 자동으로 활성화됩니다:
+#    ① 초대 코드(INVITE_CODE) 또는 허용 이메일(ALLOWED_EMAILS)
+#    ② 메일 발송기 (Resend / Brevo / Webhook 중 1개)
+#    ③ 세션 서명키 (SESSION_SECRET 또는 APP_PASSWORD 또는 INVITE_CODE 8자 이상)
+# ================================================================
+# INVITE_CODE=친구에게-알려줄-가입-초대코드
+# ALLOWED_EMAILS=me@gmail.com,friend@gmail.com
+# ADMIN_EMAILS=me@gmail.com
+# SESSION_SECRET=충분히-긴-랜덤-세션키
+
+# --- 메일 발송기 (셋 중 1개 선택) ---
+# [방법 1] Resend (월 3,000통 무료, 본인 도메인 권장)
+# RESEND_API_KEY=re_xxxxxxxxx
+# EMAIL_FROM=P2P File Transfer <no-reply@yourdomain.com>
+
+# [방법 2] Brevo (일 300통 무료)
+# BREVO_API_KEY=xkeysib-xxxxxxxxx
+# EMAIL_FROM=P2P File Transfer <no-reply@yourdomain.com>
+
+# [방법 3] Custom Webhook (도메인 없이 본인 Gmail + Google Apps Script 5줄로 무료 발송 가능 — README 참고)
+# EMAIL_WEBHOOK_URL=https://script.google.com/macros/s/xxxx/exec
+# EMAIL_WEBHOOK_SECRET=웹훅-공유-비밀키
+
+# ================================================================
+# 3) AI 연동 관리 (원격 MCP 서버 /mcp + Admin REST API)
+#    16자 이상 랜덤 키를 등록하면 Claude/Cursor/Antigravity 등 AI가
+#    임시 코드 발급·회원 관리·잠금 해제·방 생성을 직접 관리할 수 있습니다.
+# ================================================================
+# ADMIN_API_KEY=32자-이상의-랜덤-관리자-API키
+
+# ================================================================
+# 4) (선택) Cloudflare Access 이메일 인증
+# ================================================================
 # ACCESS_TEAM_DOMAIN=내팀이름.cloudflareaccess.com
 # ACCESS_AUD=Access앱의-Application-Audience-태그
 
-# --- 선택 설정 ---
-# 허용할 Origin 목록 (비우면 현재 요청 Host와 일치하는 Origin만 허용)
+# ================================================================
+# 5) (선택) STUN / TURN
+# ================================================================
 # ALLOWED_ORIGINS=https://p2p-file-transfer.내계정.workers.dev
-
-# STUN 서버 (비우면 미사용)
 # STUN_URLS=stun:stun.l.google.com:19302
-
-# [선택] 방화벽/LTE 환경용 TURN 중계 — 방법 1: Cloudflare Realtime TURN (월 1TB 무료)
 # CF_TURN_TOKEN_ID=
 # CF_TURN_API_TOKEN=
-
-# [선택] 방화벽/LTE 환경용 TURN 중계 — 방법 2: 직접 운영 coturn (HMAC 임시 자격 증명)
 # TURN_URLS=turn:turn.example.com:3478
 # TURN_SECRET=
