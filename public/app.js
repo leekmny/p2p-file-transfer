@@ -1,9 +1,9 @@
-// P2P 파일 전송 클라이언트
-//  1) 로그인 세션 확인 → WebSocket 시그널링 서버 접속
-//  2) 방 생성/참여 → 상대가 들어오면 RTCPeerConnection + DataChannel 연결
-//  3) 보안 확인 코드(SAS): 양쪽 DTLS 인증서 지문으로 6자리 숫자를 만들어 표시
-//     → 두 사람이 같은 숫자인지 비교하면 서버가 중간에서 가로채는 공격(MITM)을 탐지 가능
-//  4) DataChannel 전송 프로토콜 (한 번에 한 파일):
+// P2P 파일 전송 클라이언트 (Cloudflare Workers + Durable Objects 시그널링)
+//  1) 세션 확인(Cloudflare Access / 비밀번호 로그인)
+//  2) POST /api/rooms 로 방 생성 또는 GET /api/rooms/:code 확인 후 /ws?room=CODE 연결
+//  3) 상대가 들어오면 RTCPeerConnection + DataChannel 생성
+//  4) 보안 확인 코드(SAS): 양쪽 DTLS 인증서 지문으로 6자리 숫자를 만들어 표시
+//  5) DataChannel 전송 프로토콜 (한 번에 한 파일):
 //     송신 offer-file → 수신자 accept / decline
 //     → 바이너리 청크(64KB)… → end → 수신자 저장 후 ack (실패 시 fail, 송신 취소 시 cancel)
 
@@ -16,9 +16,12 @@ const BLOB_WARN_SIZE = 1024 ** 3;      // 디스크 직접 저장이 불가한 �
 const canStreamToDisk = typeof window.showSaveFilePicker === 'function';
 
 let ws = null;
+let pingTimer = null;
+let reconnectTimer = null;
 let pc = null;
 let channel = null;
 let roomCode = null;
+let authMode = 'password';
 let iceServers = [];
 let signalChain = Promise.resolve();   // 시그널 메시지를 순서대로 처리
 
@@ -40,14 +43,28 @@ async function init() {
   } catch { /* ICE 서버 없이 시도 */ }
 
   bindUI();
-  connectSignaling();
+
+  const codeFromUrl = new URLSearchParams(location.search).get('room');
+  if (codeFromUrl) joinRoom(codeFromUrl.trim().toUpperCase());
 }
 
 async function checkSession() {
   try {
     const res = await fetch('/api/session', { cache: 'no-store' });
-    if (res.status === 401) { goLogin(); return false; }
-  } catch { /* 서버 일시 중단: 재연결 로직에 맡김 */ }
+    if (res.status === 401) {
+      const data = await res.json().catch(() => ({}));
+      if (!data.needAccess) goLogin();
+      return false;
+    }
+    if (res.ok) {
+      const data = await res.json();
+      authMode = data.mode || 'password';
+      if (data.email) {
+        $('#userEmail').textContent = data.email;
+        $('#userEmail').hidden = false;
+      }
+    }
+  } catch { /* 네트워크 일시 중단 */ }
   return true;
 }
 
@@ -56,24 +73,26 @@ function goLogin() {
 }
 
 function bindUI() {
-  $('#createBtn').addEventListener('click', () => {
-    hideError();
-    wsSend({ type: 'create' });
-  });
+  $('#createBtn').addEventListener('click', createRoom);
 
   $('#joinForm').addEventListener('submit', (e) => {
     e.preventDefault();
-    hideError();
     const code = $('#codeInput').value.trim().toUpperCase();
     if (code.length !== 6) return showError('방 코드 6자리를 입력하세요.');
-    wsSend({ type: 'join', room: code });
+    joinRoom(code);
   });
 
   $('#leaveBtn').addEventListener('click', leaveRoom);
   $('#copyBtn').addEventListener('click', copyLink);
   $('#logoutBtn').addEventListener('click', async () => {
-    try { await fetch('/api/logout', { method: 'POST' }); } catch { /* 무시 */ }
-    location.href = '/login.html';
+    if (authMode === 'password' || authMode === 'both') {
+      try { await fetch('/api/logout', { method: 'POST' }); } catch { /* 무시 */ }
+    }
+    if (authMode === 'access' || authMode === 'both') {
+      location.href = '/cdn-cgi/access/logout';
+    } else {
+      location.href = '/login.html';
+    }
   });
 
   const drop = $('#dropZone');
@@ -98,51 +117,109 @@ function bindUI() {
   });
 }
 
-// ================================================================ 시그널링 (WebSocket)
-function connectSignaling() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws`);
+// ================================================================ 방 생성 / 참여 / 시그널링
+async function createRoom() {
+  hideError();
+  const btn = $('#createBtn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/api/rooms', { method: 'POST' });
+    if (res.status === 401) return goLogin();
+    const data = await res.json();
+    if (!res.ok) return showError(data.error || '방을 만들지 못했습니다.');
+    enterRoom(data.room);
+    setStatus('상대방을 기다리는 중… 링크나 코드를 공유하세요.', 'waiting');
+    connectRoomSocket(data.room, false);
+  } catch {
+    showError('서버에 연결할 수 없습니다.');
+  } finally {
+    btn.disabled = false;
+  }
+}
 
-  ws.onopen = () => {
-    if (roomCode) {
-      // 시그널링 서버와 재연결된 경우: 기존 방으로 다시 들어감
-      wsSend({ type: 'join', room: roomCode, rejoin: true });
+async function joinRoom(code) {
+  hideError();
+  try {
+    const res = await fetch(`/api/rooms/${encodeURIComponent(code)}`, { cache: 'no-store' });
+    if (res.status === 401) return goLogin();
+    const data = await res.json();
+    if (!res.ok) {
+      showError(data.error || '방에 참여할 수 없습니다.');
+      if (!roomCode) history.replaceState(null, '', location.pathname);
       return;
     }
-    const codeFromUrl = new URLSearchParams(location.search).get('room');
-    if (codeFromUrl) wsSend({ type: 'join', room: codeFromUrl.toUpperCase() });
+    enterRoom(data.room);
+    setStatus(data.peers >= 1 ? '상대방과 연결하는 중…' : '상대방을 기다리는 중…', 'waiting');
+    connectRoomSocket(data.room, false);
+  } catch {
+    showError('서버에 연결할 수 없습니다.');
+  }
+}
+
+function connectRoomSocket(code, rejoin) {
+  closeSocket();
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  const qs = `room=${encodeURIComponent(code)}${rejoin ? '&rejoin=1' : ''}`;
+  const sock = new WebSocket(`${proto}://${location.host}/ws?${qs}`);
+  ws = sock;
+
+  sock.onopen = () => {
+    // 25초마다 ping (서버 Hibernation AutoResponse가 DO 깨우지 않고 자동 pong 응답)
+    pingTimer = setInterval(() => {
+      if (sock.readyState === WebSocket.OPEN) sock.send('ping');
+    }, 25_000);
   };
 
-  ws.onmessage = (e) => {
+  sock.onmessage = (e) => {
+    if (e.data === 'pong') return;
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
     handleServerMessage(msg);
   };
 
-  ws.onclose = async () => {
-    // P2P 연결이 살아있으면 전송은 계속됨. 시그널링만 재연결.
-    if (roomCode && !isConnected()) setStatus('서버 연결 끊김 — 재연결 중…', 'error');
-    if (!(await checkSession())) return; // 세션 만료/로그아웃 → 로그인 화면
-    setTimeout(connectSignaling, 2000);
+  sock.onclose = async (e) => {
+    if (ws !== sock) return;
+    clearInterval(pingTimer);
+    pingTimer = null;
+    ws = null;
+
+    // 방이 없거나 정원 초과면 재연결하지 않고 홈으로 복귀
+    if (e.code === 4404 || e.code === 4409) {
+      leaveRoom(false);
+      return;
+    }
+
+    if (!roomCode) return;
+    if (!isConnected()) setStatus('시그널링 연결 끊김 — 재연결 중…', 'error');
+    if (!(await checkSession())) return;
+    reconnectTimer = setTimeout(() => {
+      if (roomCode) connectRoomSocket(roomCode, true);
+    }, 2000);
   };
+}
+
+function closeSocket() {
+  clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  clearInterval(pingTimer);
+  pingTimer = null;
+  if (ws) {
+    const old = ws;
+    ws = null;
+    old.onclose = null;
+    old.close();
+  }
 }
 
 function wsSend(msg) {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
-  else showError('서버에 연결되어 있지 않습니다. 잠시 후 다시 시도하세요.');
 }
 
 function handleServerMessage(msg) {
   switch (msg.type) {
-    case 'created':
-      enterRoom(msg.room);
-      setStatus('상대방을 기다리는 중… 링크나 코드를 공유하세요.', 'waiting');
-      break;
-
     case 'joined':
-      enterRoom(msg.room);
       if (!isConnected()) {
-        setStatus(msg.peers > 1 ? '상대방과 연결하는 중…' : '상대방을 기다리는 중…', 'waiting');
+        setStatus(msg.peers > 1 ? '상대방과 연결하는 중…' : '상대방을 기다리는 중… 링크나 코드를 공유하세요.', 'waiting');
       }
       break;
 
@@ -166,7 +243,6 @@ function handleServerMessage(msg) {
 
     case 'error':
       showError(msg.message);
-      if (!roomCode) history.replaceState(null, '', location.pathname);
       break;
   }
 }
@@ -609,8 +685,9 @@ function enterRoom(code) {
   history.replaceState(null, '', `?room=${code}`);
 }
 
-function leaveRoom() {
-  wsSend({ type: 'leave' });
+function leaveRoom(notify = true) {
+  if (notify) wsSend({ type: 'leave' });
+  closeSocket();
   closePeer();
   for (const job of sendQueue) job.ui.fail('취소됨');
   sendQueue.length = 0;

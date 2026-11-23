@@ -27,6 +27,7 @@ body {
 h1 { margin: 0 0 6px; font-size: 1.8rem; }
 .sub { margin: 0 0 24px; color: var(--muted); }
 .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.user-bar { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 
 .card {
   background: var(--card);

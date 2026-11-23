@@ -1,18 +1,19 @@
 {
   "name": "p2p-file-transfer",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "친구끼리 쓰는 WebRTC P2P 파일 전송 웹앱 (비밀번호 보호 + 보안 확인 코드)",
+  "description": "Cloudflare Workers + Durable Objects 기반 프라이빗 WebRTC P2P 파일 전송 웹앱",
   "type": "module",
-  "main": "server.js",
   "scripts": {
-    "start": "node --env-file-if-exists=.env server.js",
-    "test": "node test/server.test.js"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node test/worker.test.js"
   },
   "engines": {
-    "node": ">=22.9"
+    "node": ">=20"
   },
-  "dependencies": {
+  "devDependencies": {
+    "wrangler": "^4.0.0",
     "ws": "^8.18.0"
   }
 }

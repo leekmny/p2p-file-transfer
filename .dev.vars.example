@@ -1,0 +1,31 @@
+# 로컬 개발용 환경 변수 파일입니다.
+# 이 파일을 .dev.vars 로 복사한 뒤 값을 채우세요. (Copy-Item .dev.vars.example .dev.vars)
+# 배포 환경에서는 `npx wrangler secret put <변수명>` 으로 등록합니다.
+
+# --- 인증 방식 (둘 중 하나 이상 필수, 둘 다 비우면 안전을 위해 503 차단) ---
+
+# [방식 A] 비밀번호 로그인 (로컬 개발 또는 Cloudflare Access 없이 쓸 때)
+# 8자 이상의 추측하기 어려운 비밀번호를 입력하세요.
+APP_PASSWORD=
+
+# [방식 B] Cloudflare Access (추천: 내 이메일·친구 이메일만 허용)
+# Cloudflare Zero Trust 대시보드에서 Access를 켠 뒤 아래 두 값을 설정하면
+# Worker가 Cf-Access-Jwt-Assertion 서명을 직접 검증하고 별도 비밀번호 없이 입장합니다.
+# (APP_PASSWORD도 함께 설정하면 이메일 인증 + 비밀번호 2중 잠금이 됩니다.)
+# ACCESS_TEAM_DOMAIN=내팀이름.cloudflareaccess.com
+# ACCESS_AUD=Access앱의-Application-Audience-태그
+
+# --- 선택 설정 ---
+# 허용할 Origin 목록 (비우면 현재 요청 Host와 일치하는 Origin만 허용)
+# ALLOWED_ORIGINS=https://p2p-file-transfer.내계정.workers.dev
+
+# STUN 서버 (비우면 미사용)
+# STUN_URLS=stun:stun.l.google.com:19302
+
+# [선택] 방화벽/LTE 환경용 TURN 중계 — 방법 1: Cloudflare Realtime TURN (월 1TB 무료)
+# CF_TURN_TOKEN_ID=
+# CF_TURN_API_TOKEN=
+
+# [선택] 방화벽/LTE 환경용 TURN 중계 — 방법 2: 직접 운영 coturn (HMAC 임시 자격 증명)
+# TURN_URLS=turn:turn.example.com:3478
+# TURN_SECRET=
